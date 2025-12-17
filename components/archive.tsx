@@ -2,14 +2,30 @@
 
 import React, { useEffect, useMemo, useState } from "react";
 import Papa from "papaparse";
-import { Search, Code2, BookOpen, FileText, AlertTriangle } from "lucide-react";
 import * as Tabs from "@radix-ui/react-tabs";
 import { cn } from "@/lib/cn";
+import {
+  Search,
+  Code2,
+  BookOpen,
+  FileText,
+  ExternalLink,
+  AlertTriangle,
+  RefreshCcw,
+  Tag as TagIcon,
+} from "lucide-react";
+
+/* =======================
+   Optional hard-coded fallback (recommended for stability)
+   - If env var is missing, the app will use this URL.
+   - Set to "" to disable fallback.
+======================= */
+const FALLBACK_SHEET_CSV_URL =
+  "https://docs.google.com/spreadsheets/d/e/2PACX-1vRhrERIo-anAjRDVqZNiaU0TKDzyHOdVtYvPH4_VQFQySq_hESmL69ez3rxmRs88N1G6C5I3ZTd8d_t/pub?output=csv";
 
 /* =======================
    Types
 ======================= */
-
 type ResourceRow = {
   id?: string;
   title?: string;
@@ -41,17 +57,17 @@ const TABS: ReadonlyArray<{
   key: TabKey;
   label: string;
   match: readonly Category[];
+  icon?: React.ReactNode;
 }> = [
   { key: "all", label: "All", match: CATEGORY_KEYS },
-  { key: "python", label: "Python code", match: ["python"] },
-  { key: "lecture", label: "Lecture", match: ["lecture"] },
-  { key: "article", label: "Article", match: ["article"] },
+  { key: "python", label: "Python code", match: ["python"], icon: <Code2 className="h-4 w-4" /> },
+  { key: "lecture", label: "Lecture", match: ["lecture"], icon: <BookOpen className="h-4 w-4" /> },
+  { key: "article", label: "Article", match: ["article"], icon: <FileText className="h-4 w-4" /> },
 ];
 
 /* =======================
    Helpers
 ======================= */
-
 function normalizeList(s: string, sep = ",") {
   return (s || "")
     .split(sep)
@@ -62,14 +78,12 @@ function normalizeList(s: string, sep = ",") {
 function normalizeTags(s: string): string[] {
   const raw = (s || "").trim();
   if (!raw) return [];
-  // prefer commas, then semicolons, then pipes, then whitespace
   const c = normalizeList(raw, ",");
   if (c.length > 1) return c;
   const sc = normalizeList(raw, ";");
   if (sc.length > 1) return sc;
   const p = normalizeList(raw, "|");
   if (p.length > 1) return p;
-
   return raw
     .split(/\s+/g)
     .map((v) => v.trim())
@@ -80,8 +94,7 @@ function normalizeCategories(s: string): Category[] {
   const raw = (s || "").trim();
   if (!raw) return [];
 
-  // allow comma/semicolon/pipe; single token also allowed
-  const candidates =
+  const tokens =
     normalizeList(raw, ",").length > 1
       ? normalizeList(raw, ",")
       : normalizeList(raw, ";").length > 1
@@ -90,7 +103,7 @@ function normalizeCategories(s: string): Category[] {
           ? normalizeList(raw, "|")
           : [raw];
 
-  return candidates
+  return tokens
     .map((c) => {
       const x = c.toLowerCase().trim();
       if (x === "tool") return "python"; // backward compatibility
@@ -111,20 +124,16 @@ function normalizeFiles(s: string): FileItem[] {
       const name = (nameRaw || "").trim();
       const url = (urlRaw || "").trim();
 
-      // URL-only fallback
       if (!url && name.startsWith("http")) return { name: "File", url: name };
-
       return { name: name || "File", url };
     })
     .filter((x) => x.url);
 }
 
 function toResource(r: ResourceRow): Resource {
-  const id = (r.id || "").trim();
-  const title = (r.title || "").trim();
   return {
-    id,
-    title,
+    id: (r.id || "").trim(),
+    title: (r.title || "").trim(),
     description: (r.description || "").trim(),
     categories: normalizeCategories(r.categories || ""),
     tags: normalizeTags(r.tags || ""),
@@ -133,119 +142,97 @@ function toResource(r: ResourceRow): Resource {
   };
 }
 
-function tabIcon(key: TabKey) {
-  if (key === "python") return <Code2 className="h-4 w-4" />;
-  if (key === "lecture") return <BookOpen className="h-4 w-4" />;
-  if (key === "article") return <FileText className="h-4 w-4" />;
-  return null;
+function detectDelimiter(text: string): { delimiter?: string; reason: string } {
+  const firstLine = (text || "").split(/\r?\n/)[0] || "";
+  if (firstLine.includes("\t")) return { delimiter: "\t", reason: "TAB delimiter detected in header" };
+  if (firstLine.includes(",")) return { delimiter: ",", reason: "Comma delimiter detected in header" };
+  if (firstLine.includes(";")) return { delimiter: ";", reason: "Semicolon delimiter detected in header" };
+  return { delimiter: undefined, reason: "No obvious delimiter; using Papa default" };
 }
 
-function categoryBadgeLabel(cat: Category) {
+function categoryLabel(cat: Category) {
   if (cat === "python") return "Python code";
   return cat.charAt(0).toUpperCase() + cat.slice(1);
 }
 
-function detectDelimiter(text: string): { delimiter?: string; reason: string } {
-  const firstLine = (text || "").split(/\r?\n/)[0] || "";
-  // detect by presence; prioritize tab if it exists (common when people paste)
-  if (firstLine.includes("\t")) return { delimiter: "\t", reason: "Detected TAB in header line" };
-  if (firstLine.includes(",")) return { delimiter: ",", reason: "Detected comma in header line" };
-  if (firstLine.includes(";")) return { delimiter: ";", reason: "Detected semicolon in header line" };
-  // fallback: let Papa decide
-  return { delimiter: undefined, reason: "No obvious delimiter; using Papa default" };
-}
-
 /* =======================
-   Main Component
+   Component
 ======================= */
-
 export default function Archive() {
   const [rows, setRows] = useState<Resource[]>([]);
-  const [query, setQuery] = useState("");
-  const [tab, setTab] = useState<TabKey>("all");
   const [loading, setLoading] = useState(true);
-
-  // Visible diagnostics (so “No results” is actionable)
+  const [tab, setTab] = useState<TabKey>("all");
+  const [query, setQuery] = useState("");
   const [errMsg, setErrMsg] = useState<string | null>(null);
+
   const [diag, setDiag] = useState<{
+    usedUrl?: string;
+    status?: number;
+    delimiter?: string;
     delimiterReason?: string;
-    detectedDelimiter?: string;
     headerLine?: string;
     parsedFields?: string[];
-    sampleRow?: Record<string, unknown>;
   } | null>(null);
 
-  const sheetUrl = process.env.NEXT_PUBLIC_SHEET_CSV_URL;
+  const sheetUrl =
+    process.env.NEXT_PUBLIC_SHEET_CSV_URL?.trim() ||
+    (FALLBACK_SHEET_CSV_URL.trim() ? FALLBACK_SHEET_CSV_URL.trim() : "");
+
+  async function load() {
+    setLoading(true);
+    setErrMsg(null);
+    setDiag(null);
+
+    try {
+      if (!sheetUrl) throw new Error("NEXT_PUBLIC_SHEET_CSV_URL is not set (and no fallback URL is configured).");
+
+      const res = await fetch(sheetUrl, { cache: "no-store" });
+      const status = res.status;
+      if (!res.ok) throw new Error(`Failed to fetch sheet export. HTTP ${status}`);
+
+      const text = await res.text();
+      const { delimiter, reason } = detectDelimiter(text);
+
+      const parsed = Papa.parse<any>(text, {
+        header: true,
+        skipEmptyLines: true,
+        delimiter,
+        transformHeader: (h) => (h || "").trim().toLowerCase(),
+      });
+
+      // Map common header variations into expected keys (lowercased already)
+      const normalizedData: ResourceRow[] = (parsed.data || []).map((r: any) => ({
+        id: r?.id ?? r?.["ID"] ?? r?.["Id"],
+        title: r?.title ?? r?.["Title"],
+        description: r?.description ?? r?.["desc"] ?? r?.["설명"],
+        categories: r?.categories ?? r?.["category"] ?? r?.["카테고리"],
+        tags: r?.tags ?? r?.["tag"] ?? r?.["태그"],
+        files: r?.files ?? r?.["file"] ?? r?.["자료"] ?? r?.["링크"],
+        createdAt: r?.createdat ?? r?.["created_at"] ?? r?.["createdat"] ?? r?.["date"] ?? r?.["날짜"] ?? r?.createdat,
+      }));
+
+      const data = normalizedData.map(toResource).filter((x) => x.id && x.title);
+
+      setRows(data);
+      setDiag({
+        usedUrl: sheetUrl,
+        status,
+        delimiter: delimiter ?? "(Papa default)",
+        delimiterReason: reason,
+        headerLine: (text.split(/\r?\n/)[0] || "").slice(0, 200),
+        parsedFields: parsed.meta?.fields || [],
+      });
+    } catch (e: any) {
+      setRows([]);
+      setErrMsg(e?.message ? String(e.message) : "Unknown error while loading sheet.");
+    } finally {
+      setLoading(false);
+    }
+  }
 
   useEffect(() => {
-    let cancelled = false;
-
-    async function load() {
-      setLoading(true);
-      setErrMsg(null);
-      setDiag(null);
-
-      try {
-        if (!sheetUrl) throw new Error("NEXT_PUBLIC_SHEET_CSV_URL is not set.");
-
-        const res = await fetch(sheetUrl, { cache: "no-store" });
-        if (!res.ok) throw new Error(`Failed to fetch sheet export: HTTP ${res.status}`);
-
-        const text = await res.text();
-
-        const { delimiter, reason } = detectDelimiter(text);
-
-        const parsed = Papa.parse<ResourceRow>(text, {
-          header: true,
-          skipEmptyLines: true,
-          delimiter, // may be undefined; Papa default
-          transformHeader: (h) => (h || "").trim().toLowerCase(),
-        });
-
-        // Map flexible headers to our expected ones (all lowercase already)
-        // This protects against minor header variations.
-        const normalizedData: ResourceRow[] = (parsed.data || []).map((row: any) => {
-          const r = row || {};
-          return {
-            id: r.id ?? r["ID"] ?? r["Id"] ?? r["아이디"],
-            title: r.title ?? r["Title"] ?? r["제목"],
-            description: r.description ?? r["desc"] ?? r["설명"],
-            categories: r.categories ?? r["category"] ?? r["카테고리"],
-            tags: r.tags ?? r["tag"] ?? r["태그"],
-            files: r.files ?? r["file"] ?? r["자료"] ?? r["링크"],
-            createdAt: r.createdat ?? r["createdat"] ?? r["created_at"] ?? r["date"] ?? r["날짜"],
-          };
-        });
-
-        const data = normalizedData
-          .map(toResource)
-          .filter((r) => r.id && r.title);
-
-        if (!cancelled) {
-          setRows(data);
-          setDiag({
-            detectedDelimiter: delimiter ?? "(Papa default)",
-            delimiterReason: reason,
-            headerLine: (text.split(/\r?\n/)[0] || "").slice(0, 250),
-            parsedFields: parsed.meta?.fields || [],
-            sampleRow: (parsed.data && (parsed.data[0] as any)) || undefined,
-          });
-        }
-      } catch (e: any) {
-        console.error(e);
-        if (!cancelled) {
-          setRows([]);
-          setErrMsg(e?.message ? String(e.message) : "Unknown error while loading sheet.");
-        }
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    }
-
     load();
-    return () => {
-      cancelled = true;
-    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sheetUrl]);
 
   const counts = useMemo(() => {
@@ -269,7 +256,13 @@ export default function Archive() {
       })
       .filter((r) => {
         if (!q) return true;
-        const hay = [r.title, r.description, r.tags.join(" "), r.categories.join(" ")]
+        const hay = [
+          r.title,
+          r.description,
+          r.tags.join(" "),
+          r.categories.map(categoryLabel).join(" "),
+          r.fileItems.map((f) => f.name).join(" "),
+        ]
           .join(" ")
           .toLowerCase();
         return hay.includes(q);
@@ -280,44 +273,62 @@ export default function Archive() {
     <div className="min-h-screen bg-gradient-to-b from-white to-gray-50">
       <header className="border-b bg-white/80 backdrop-blur">
         <div className="mx-auto max-w-6xl px-6 py-6">
-          <div className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
-            <div>
+          <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+            <div className="space-y-1">
               <div className="text-2xl font-semibold tracking-tight">Yonsei HW Lab</div>
-              <div className="mt-1 text-sm text-gray-600">Materials Archive</div>
+              <div className="text-sm text-gray-600">Materials Archive</div>
             </div>
 
-            <div className="w-full md:w-[420px]">
-              <div className="relative">
+            <div className="flex w-full flex-col gap-3 md:w-[520px] md:flex-row md:items-center md:justify-end">
+              <div className="relative w-full">
                 <Search className="absolute left-3 top-3.5 h-4 w-4 text-gray-500" />
                 <input
                   className="w-full rounded-xl border bg-white px-10 py-3 text-sm outline-none focus:ring-2 focus:ring-gray-200"
-                  placeholder="Search (title / description / tags)..."
+                  placeholder="Search: title, tags, file names..."
                   value={query}
                   onChange={(e) => setQuery(e.target.value)}
                 />
               </div>
-              <div className="mt-2 text-xs text-gray-500">
-                {loading ? "Loading…" : `${filtered.length} result(s)`}
-              </div>
+
+              <button
+                onClick={load}
+                className="inline-flex items-center justify-center gap-2 rounded-xl border bg-white px-4 py-3 text-sm shadow-sm hover:bg-gray-50"
+                type="button"
+                title="Reload"
+              >
+                <RefreshCcw className="h-4 w-4" />
+                Reload
+              </button>
             </div>
           </div>
 
-          <div className="mt-5">
+          <div className="mt-5 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
             <Tabs.Root value={tab} onValueChange={(v) => setTab(v as TabKey)}>
               <Tabs.List className="inline-flex flex-wrap gap-2">
                 {TABS.map((t) => (
-                  <TabTrigger key={t.key} value={t.key}>
+                  <Tabs.Trigger
+                    key={t.key}
+                    value={t.key}
+                    className={cn(
+                      "rounded-xl border bg-white px-4 py-2 text-sm shadow-sm",
+                      "hover:bg-gray-50 data-[state=active]:border-gray-900 data-[state=active]:ring-2 data-[state=active]:ring-gray-200"
+                    )}
+                  >
                     <span className="inline-flex items-center gap-2">
-                      {tabIcon(t.key)}
+                      {t.icon}
                       <span>{t.label}</span>
                       <span className="rounded-md bg-black/5 px-2 py-0.5 text-xs text-gray-700">
                         {counts[t.key]}
                       </span>
                     </span>
-                  </TabTrigger>
+                  </Tabs.Trigger>
                 ))}
               </Tabs.List>
             </Tabs.Root>
+
+            <div className="text-xs text-gray-600">
+              {loading ? "Loading…" : `Showing ${filtered.length} result(s)`}
+            </div>
           </div>
         </div>
       </header>
@@ -327,127 +338,131 @@ export default function Archive() {
           <div className="text-sm text-gray-600">Loading…</div>
         ) : filtered.length === 0 ? (
           <div className="space-y-4">
-            <div className="rounded-2xl border bg-white p-6 text-sm text-gray-600">
-              No results. Check (1) your Google Sheets CSV link, (2) column headers, and (3) whether the row has both{" "}
-              <code className="rounded bg-gray-100 px-1">id</code> and{" "}
-              <code className="rounded bg-gray-100 px-1">title</code>.
+            <div className="rounded-2xl border bg-white p-6 text-sm text-gray-700">
+              No results.
+              <div className="mt-2 text-sm text-gray-600">
+                If this used to work, the most common causes are: missing env var, export URL changed, or delimiter/header mismatch.
+              </div>
             </div>
 
-            {(errMsg || diag) && (
-              <div className="rounded-2xl border bg-white p-6">
-                <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-gray-900">
-                  <AlertTriangle className="h-4 w-4" />
-                  Diagnostics (for debugging)
-                </div>
-
-                {errMsg ? (
-                  <div className="text-sm text-red-700">
-                    <div className="font-medium">Fetch/parse error:</div>
-                    <div className="mt-1 whitespace-pre-wrap">{errMsg}</div>
-                  </div>
-                ) : (
-                  <div className="space-y-2 text-sm text-gray-700">
-                    <div>
-                      <span className="font-medium">Delimiter:</span>{" "}
-                      {diag?.detectedDelimiter}{" "}
-                      <span className="text-gray-500">({diag?.delimiterReason})</span>
-                    </div>
-                    <div>
-                      <span className="font-medium">Header line (first 250 chars):</span>
-                      <div className="mt-1 rounded-lg bg-gray-50 p-2 font-mono text-xs text-gray-700">
-                        {diag?.headerLine || "(none)"}
-                      </div>
-                    </div>
-                    <div>
-                      <span className="font-medium">Parsed fields:</span>{" "}
-                      <span className="font-mono text-xs">{(diag?.parsedFields || []).join(", ") || "(none)"}</span>
-                    </div>
-                  </div>
-                )}
+            <div className="rounded-2xl border bg-white p-6">
+              <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-gray-900">
+                <AlertTriangle className="h-4 w-4" />
+                Diagnostics
               </div>
-            )}
+
+              {errMsg ? (
+                <div className="text-sm text-red-700 whitespace-pre-wrap">{errMsg}</div>
+              ) : (
+                <div className="space-y-2 text-sm text-gray-700">
+                  <div>
+                    <span className="font-medium">Used URL:</span>{" "}
+                    <span className="font-mono text-xs break-all">{diag?.usedUrl || "(none)"}</span>
+                  </div>
+                  <div>
+                    <span className="font-medium">HTTP status:</span> {diag?.status ?? "(unknown)"}
+                  </div>
+                  <div>
+                    <span className="font-medium">Delimiter:</span> {diag?.delimiter ?? "(unknown)"}{" "}
+                    <span className="text-gray-500">({diag?.delimiterReason ?? ""})</span>
+                  </div>
+                  <div>
+                    <span className="font-medium">Header line:</span>
+                    <div className="mt-1 rounded-lg bg-gray-50 p-2 font-mono text-xs text-gray-700">
+                      {diag?.headerLine || "(none)"}
+                    </div>
+                  </div>
+                  <div>
+                    <span className="font-medium">Parsed fields:</span>{" "}
+                    <span className="font-mono text-xs">{(diag?.parsedFields || []).join(", ") || "(none)"}</span>
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
         ) : (
           <div className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-3">
             {filtered.map((r) => (
-              <Card key={r.id} r={r} />
+              <ResourceCard key={r.id} r={r} />
             ))}
           </div>
         )}
       </main>
+
+      <footer className="border-t bg-white/60">
+        <div className="mx-auto max-w-6xl px-6 py-6 text-xs text-gray-500">
+          Public archive powered by Google Sheets export.
+        </div>
+      </footer>
     </div>
   );
 }
 
 /* =======================
-   Subcomponents
+   Card
 ======================= */
-
-function TabTrigger({ value, children }: { value: TabKey; children: React.ReactNode }) {
-  return (
-    <Tabs.Trigger
-      value={value}
-      className={cn(
-        "rounded-xl border bg-white px-4 py-2 text-sm shadow-sm",
-        "hover:bg-gray-50 data-[state=active]:border-gray-900 data-[state=active]:ring-2",
-        "data-[state=active]:ring-gray-200"
-      )}
-    >
-      {children}
-    </Tabs.Trigger>
-  );
-}
-
-function Card({ r }: { r: Resource }) {
-  const uniqueCats = Array.from(new Set(r.categories));
+function ResourceCard({ r }: { r: Resource }) {
+  const cats = Array.from(new Set(r.categories));
+  const tags = r.tags;
 
   return (
     <div className="rounded-2xl border bg-white p-6 shadow-sm">
-      <div className="text-lg font-semibold leading-snug">{r.title}</div>
+      <div className="flex items-start justify-between gap-3">
+        <div className="text-base font-semibold leading-snug">{r.title}</div>
+      </div>
 
       {r.description ? (
-        <div className="mt-2 text-sm text-gray-600 line-clamp-3">{r.description}</div>
+        <div className="mt-2 text-sm text-gray-600">{r.description}</div>
       ) : (
         <div className="mt-2 text-sm text-gray-400">No description.</div>
       )}
 
       <div className="mt-4 flex flex-wrap gap-2">
-        {uniqueCats.map((c) => (
-          <Chip key={`${r.id}-${c}`}>{categoryBadgeLabel(c)}</Chip>
+        {cats.map((c) => (
+          <Chip key={`${r.id}-c-${c}`}>{categoryLabel(c)}</Chip>
         ))}
       </div>
 
-      {r.tags.length > 0 && (
+      {tags.length > 0 && (
         <div className="mt-3 flex flex-wrap gap-2">
-          {r.tags.map((t) => (
-            <Tag key={`${r.id}-tag-${t}`}>{t}</Tag>
+          {tags.slice(0, 10).map((t) => (
+            <Tag key={`${r.id}-t-${t}`}>{t}</Tag>
           ))}
+          {tags.length > 10 && <Tag>+{tags.length - 10}</Tag>}
         </div>
       )}
 
-      <div className="mt-4 flex items-center gap-2 text-sm text-gray-600">
-        <span className="inline-flex items-center gap-2">
-          <span className="text-base">📎</span>
-          {r.fileItems.length} file(s)
-        </span>
+      <div className="mt-5 border-t pt-4">
+        <div className="mb-2 flex items-center gap-2 text-sm font-medium text-gray-900">
+          <span className="inline-flex items-center gap-2">
+            <span className="text-sm">Files</span>
+            <span className="rounded-md bg-black/5 px-2 py-0.5 text-xs text-gray-700">{r.fileItems.length}</span>
+          </span>
+        </div>
+
+        {r.fileItems.length === 0 ? (
+          <div className="text-sm text-gray-400">No files.</div>
+        ) : (
+          <div className="space-y-2">
+            {r.fileItems.map((f, idx) => (
+              <a
+                key={`${r.id}-f-${idx}`}
+                href={f.url}
+                target="_blank"
+                rel="noreferrer"
+                className="group flex items-center justify-between gap-3 rounded-xl border px-3 py-2 text-sm hover:bg-gray-50"
+                title={f.url}
+              >
+                <div className="min-w-0">
+                  <div className="truncate font-medium text-gray-900">{f.name}</div>
+                  <div className="truncate text-xs text-gray-500">{f.url}</div>
+                </div>
+                <ExternalLink className="h-4 w-4 text-gray-400 group-hover:text-gray-700" />
+              </a>
+            ))}
+          </div>
+        )}
       </div>
-
-      {r.fileItems.length > 0 && (
-        <div className="mt-4 space-y-2">
-          {r.fileItems.map((f, idx) => (
-            <a
-              key={`${r.id}-file-${idx}`}
-              href={f.url}
-              target="_blank"
-              rel="noreferrer"
-              className="block truncate rounded-xl border px-3 py-2 text-sm hover:bg-gray-50"
-              title={f.url}
-            >
-              {f.name}
-            </a>
-          ))}
-        </div>
-      )}
     </div>
   );
 }
@@ -462,8 +477,9 @@ function Chip({ children }: { children: React.ReactNode }) {
 
 function Tag({ children }: { children: React.ReactNode }) {
   return (
-    <span className="inline-flex items-center rounded-full bg-gray-100 px-3 py-1 text-xs text-gray-700">
-      #{children}
+    <span className="inline-flex items-center gap-1 rounded-full bg-gray-100 px-3 py-1 text-xs text-gray-700">
+      <TagIcon className="h-3.5 w-3.5" />
+      {children}
     </span>
   );
 }
