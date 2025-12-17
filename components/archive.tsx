@@ -14,8 +14,8 @@ type ResourceRow = {
   id: string;
   title: string;
   description: string;
-  categories: string; // comma-separated
-  tags: string; // comma-separated
+  categories: string; // comma-separated (or other)
+  tags: string; // comma-separated (or other)
   files: string; // name::url | name::url
   createdAt?: string;
 };
@@ -59,12 +59,37 @@ function normalizeList(s: string, sep = ",") {
     .filter(Boolean);
 }
 
+function normalizeTags(s: string): string[] {
+  // tags는 보통 comma지만, 사람이 tab/semicolon 등으로 넣을 수 있어서 완충
+  // 1) comma 우선
+  const comma = normalizeList(s, ",");
+  if (comma.length > 1) return comma;
+
+  // 2) semicolon
+  const semi = normalizeList(s, ";");
+  if (semi.length > 1) return semi;
+
+  // 3) pipe
+  const pipe = normalizeList(s, "|");
+  if (pipe.length > 1) return pipe;
+
+  // 4) whitespace fallback
+  return (s || "")
+    .split(/\s+/g)
+    .map((v) => v.trim())
+    .filter(Boolean);
+}
+
 function normalizeCategories(s: string): Category[] {
-  return normalizeList(s)
+  // categories는 comma 기준을 기본으로 하되, 입력 변형을 흡수
+  const raw = normalizeList(s, ",").length > 1 ? normalizeList(s, ",") : normalizeList(s, ";").length > 1 ? normalizeList(s, ";") : normalizeList(s, "|").length > 1 ? normalizeList(s, "|") : normalizeList(s, ",");
+
+  return raw
     .map((c) => {
-      const x = c.toLowerCase();
+      const x = c.toLowerCase().trim();
       if (x === "tool") return "python"; // backward compatibility
-      if (x === "python code") return "python"; // tolerate human input
+      if (x === "python code") return "python";
+      if (x === "py") return "python";
       return x;
     })
     .filter((x): x is Category => (CATEGORY_KEYS as readonly string[]).includes(x));
@@ -80,7 +105,7 @@ function normalizeFiles(s: string): FileItem[] {
       const name = (nameRaw || "").trim();
       const url = (urlRaw || "").trim();
 
-      // fallback: URL only
+      // URL only
       if (!url && name.startsWith("http")) return { name: "File", url: name };
 
       return { name: name || "File", url };
@@ -94,7 +119,7 @@ function toResource(r: ResourceRow): Resource {
     title: (r.title || "").trim(),
     description: (r.description || "").trim(),
     categories: normalizeCategories(r.categories),
-    tags: normalizeList(r.tags),
+    tags: normalizeTags(r.tags),
     fileItems: normalizeFiles(r.files),
     createdAt: r.createdAt?.trim(),
   };
@@ -134,13 +159,24 @@ export default function Archive() {
         const res = await fetch(sheetUrl, { cache: "no-store" });
         if (!res.ok) throw new Error(`Failed to fetch sheet CSV: ${res.status}`);
 
-        const csvText = await res.text();
-        const parsed = Papa.parse<ResourceRow>(csvText, {
-          header: true,
-          skipEmptyLines: true,
-        });
+        const text = await res.text();
 
-        const data = (parsed.data || []).map(toResource).filter((r) => r.id && r.title);
+        // 1) 기본 파싱(보통 콤마)
+        const tryParse = (delimiter?: string) =>
+          Papa.parse<ResourceRow>(text, {
+            header: true,
+            skipEmptyLines: true,
+            delimiter,
+          });
+
+        let parsed = tryParse();
+        let data = (parsed.data || []).map(toResource).filter((r) => r.id && r.title);
+
+        // 2) 탭(TSV) 재시도
+        if (data.length === 0) {
+          parsed = tryParse("\t");
+          data = (parsed.data || []).map(toResource).filter((r) => r.id && r.title);
+        }
 
         if (!cancelled) setRows(data);
       } catch (e) {
@@ -205,9 +241,7 @@ export default function Archive() {
                   onChange={(e) => setQuery(e.target.value)}
                 />
               </div>
-              <div className="mt-2 text-xs text-gray-500">
-                {loading ? "Loading…" : `${filtered.length} result(s)`}
-              </div>
+              <div className="mt-2 text-xs text-gray-500">{loading ? "Loading…" : `${filtered.length} result(s)`}</div>
             </div>
           </div>
 
@@ -236,9 +270,8 @@ export default function Archive() {
           <div className="text-sm text-gray-600">Loading…</div>
         ) : filtered.length === 0 ? (
           <div className="rounded-2xl border bg-white p-6 text-sm text-gray-600">
-            No results. Check (1) your Google Sheets CSV link, (2) column headers, and (3) whether
-            the row has both <code className="rounded bg-gray-100 px-1">id</code> and{" "}
-            <code className="rounded bg-gray-100 px-1">title</code>.
+            No results. Check (1) your Google Sheets CSV link, (2) column headers, and (3) whether the row has both{" "}
+            <code className="rounded bg-gray-100 px-1">id</code> and <code className="rounded bg-gray-100 px-1">title</code>.
           </div>
         ) : (
           <div className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-3">
