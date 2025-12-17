@@ -6,6 +6,10 @@ import { Search, Code2, BookOpen, FileText } from "lucide-react";
 import * as Tabs from "@radix-ui/react-tabs";
 import { cn } from "@/lib/cn";
 
+/* =======================
+   Types
+======================= */
+
 type ResourceRow = {
   id: string;
   title: string;
@@ -18,15 +22,35 @@ type ResourceRow = {
 
 type FileItem = { name: string; url: string };
 
+const CATEGORY_KEYS = ["article", "lecture", "python"] as const;
+type Category = (typeof CATEGORY_KEYS)[number];
+
 type Resource = {
   id: string;
   title: string;
   description: string;
-  categories: string[];
+  categories: Category[];
   tags: string[];
   fileItems: FileItem[];
   createdAt?: string;
 };
+
+type TabKey = "all" | "python" | "lecture" | "article";
+
+const TABS: ReadonlyArray<{
+  key: TabKey;
+  label: string;
+  match: readonly Category[];
+}> = [
+  { key: "all", label: "All", match: CATEGORY_KEYS },
+  { key: "python", label: "Python code", match: ["python"] },
+  { key: "lecture", label: "Lecture", match: ["lecture"] },
+  { key: "article", label: "Article", match: ["article"] },
+];
+
+/* =======================
+   Helpers
+======================= */
 
 function normalizeList(s: string, sep = ",") {
   return (s || "")
@@ -35,13 +59,15 @@ function normalizeList(s: string, sep = ",") {
     .filter(Boolean);
 }
 
-function normalizeCategories(s: string): string[] {
-  return normalizeList(s).map((c) => {
-    const x = c.toLowerCase();
-    if (x === "tool") return "python"; // backward compatibility
-    if (x === "python code") return "python";
-    return x;
-  });
+function normalizeCategories(s: string): Category[] {
+  return normalizeList(s)
+    .map((c) => {
+      const x = c.toLowerCase();
+      if (x === "tool") return "python"; // backward compatibility
+      if (x === "python code") return "python"; // tolerate human input
+      return x;
+    })
+    .filter((x): x is Category => (CATEGORY_KEYS as readonly string[]).includes(x));
 }
 
 function normalizeFiles(s: string): FileItem[] {
@@ -54,9 +80,9 @@ function normalizeFiles(s: string): FileItem[] {
       const name = (nameRaw || "").trim();
       const url = (urlRaw || "").trim();
 
-      if (!url && name.startsWith("http")) {
-        return { name: "File", url: name };
-      }
+      // fallback: URL only
+      if (!url && name.startsWith("http")) return { name: "File", url: name };
+
       return { name: name || "File", url };
     })
     .filter((x) => x.url);
@@ -74,15 +100,6 @@ function toResource(r: ResourceRow): Resource {
   };
 }
 
-const TABS = [
-  { key: "all", label: "All", match: ["article", "lecture", "python"] },
-  { key: "python", label: "Python code", match: ["python"] },
-  { key: "lecture", label: "Lecture", match: ["lecture"] },
-  { key: "article", label: "Article", match: ["article"] },
-] as const;
-
-type TabKey = (typeof TABS)[number]["key"];
-
 function tabIcon(key: TabKey) {
   if (key === "python") return <Code2 className="h-4 w-4" />;
   if (key === "lecture") return <BookOpen className="h-4 w-4" />;
@@ -90,10 +107,14 @@ function tabIcon(key: TabKey) {
   return null;
 }
 
-function categoryBadgeLabel(cat: string) {
+function categoryBadgeLabel(cat: Category) {
   if (cat === "python") return "Python code";
   return cat.charAt(0).toUpperCase() + cat.slice(1);
 }
+
+/* =======================
+   Main Component
+======================= */
 
 export default function Archive() {
   const [rows, setRows] = useState<Resource[]>([]);
@@ -137,28 +158,23 @@ export default function Archive() {
   }, [sheetUrl]);
 
   const counts = useMemo(() => {
-    const base = Object.fromEntries(TABS.map((t) => [t.key, 0])) as Record<TabKey, number>;
-    base.all = rows.length;
-
+    const base = { all: rows.length, python: 0, lecture: 0, article: 0 } as Record<TabKey, number>;
     for (const r of rows) {
-      for (const t of TABS) {
-        if (t.key === "all") continue;
-        if (r.categories.some((c) => t.match.includes(c))) {
-          base[t.key] += 1;
-        }
-      }
+      if (r.categories.includes("python")) base.python += 1;
+      if (r.categories.includes("lecture")) base.lecture += 1;
+      if (r.categories.includes("article")) base.article += 1;
     }
     return base;
   }, [rows]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
-    const activeTab = TABS.find((t) => t.key === tab) || TABS[0];
+    const active = TABS.find((t) => t.key === tab) || TABS[0];
 
     return rows
       .filter((r) => {
-        if (activeTab.key === "all") return true;
-        return r.categories.some((c) => activeTab.match.includes(c));
+        if (active.key === "all") return true;
+        return r.categories.some((c) => active.match.includes(c));
       })
       .filter((r) => {
         if (!q) return true;
@@ -183,7 +199,7 @@ export default function Archive() {
               <div className="relative">
                 <Search className="absolute left-3 top-3.5 h-4 w-4 text-gray-500" />
                 <input
-                  className="w-full rounded-xl border bg-white px-10 py-3 text-sm outline-none focus:ring-2"
+                  className="w-full rounded-xl border bg-white px-10 py-3 text-sm outline-none focus:ring-2 focus:ring-gray-200"
                   placeholder="Search (title / description / tags)..."
                   value={query}
                   onChange={(e) => setQuery(e.target.value)}
@@ -199,12 +215,12 @@ export default function Archive() {
             <Tabs.Root value={tab} onValueChange={(v) => setTab(v as TabKey)}>
               <Tabs.List className="inline-flex flex-wrap gap-2">
                 {TABS.map((t) => (
-                  <TabTrigger key={t.key} value={t.key as TabKey}>
+                  <TabTrigger key={t.key} value={t.key}>
                     <span className="inline-flex items-center gap-2">
-                      {tabIcon(t.key as TabKey)}
+                      {tabIcon(t.key)}
                       <span>{t.label}</span>
                       <span className="rounded-md bg-black/5 px-2 py-0.5 text-xs text-gray-700">
-                        {t.key === "all" ? counts.all : counts[t.key as TabKey]}
+                        {counts[t.key]}
                       </span>
                     </span>
                   </TabTrigger>
@@ -236,6 +252,10 @@ export default function Archive() {
   );
 }
 
+/* =======================
+   Subcomponents
+======================= */
+
 function TabTrigger({ value, children }: { value: TabKey; children: React.ReactNode }) {
   return (
     <Tabs.Trigger
@@ -252,17 +272,11 @@ function TabTrigger({ value, children }: { value: TabKey; children: React.ReactN
 }
 
 function Card({ r }: { r: Resource }) {
-  const labels = Array.from(
-    new Set(
-      r.categories.map((c) => (c === "python" ? "python" : c.toLowerCase())).filter(Boolean)
-    )
-  );
+  const uniqueCats = Array.from(new Set(r.categories));
 
   return (
     <div className="rounded-2xl border bg-white p-6 shadow-sm">
-      <div className="flex items-start justify-between gap-3">
-        <div className="text-lg font-semibold leading-snug">{r.title}</div>
-      </div>
+      <div className="text-lg font-semibold leading-snug">{r.title}</div>
 
       {r.description ? (
         <div className="mt-2 text-sm text-gray-600 line-clamp-3">{r.description}</div>
@@ -271,7 +285,7 @@ function Card({ r }: { r: Resource }) {
       )}
 
       <div className="mt-4 flex flex-wrap gap-2">
-        {labels.map((c) => (
+        {uniqueCats.map((c) => (
           <Chip key={`${r.id}-${c}`}>{categoryBadgeLabel(c)}</Chip>
         ))}
       </div>
@@ -279,7 +293,7 @@ function Card({ r }: { r: Resource }) {
       {r.tags.length > 0 && (
         <div className="mt-3 flex flex-wrap gap-2">
           {r.tags.map((t) => (
-            <Tag key={`${r.id}-t-${t}`}>{t}</Tag>
+            <Tag key={`${r.id}-tag-${t}`}>{t}</Tag>
           ))}
         </div>
       )}
@@ -295,7 +309,7 @@ function Card({ r }: { r: Resource }) {
         <div className="mt-4 space-y-2">
           {r.fileItems.map((f, idx) => (
             <a
-              key={`${r.id}-f-${idx}`}
+              key={`${r.id}-file-${idx}`}
               href={f.url}
               target="_blank"
               rel="noreferrer"
@@ -313,7 +327,7 @@ function Card({ r }: { r: Resource }) {
 
 function Chip({ children }: { children: React.ReactNode }) {
   return (
-    <span className="inline-flex items-center gap-2 rounded-xl border bg-gray-50 px-3 py-1 text-xs text-gray-700">
+    <span className="inline-flex items-center rounded-xl border bg-gray-50 px-3 py-1 text-xs text-gray-700">
       {children}
     </span>
   );
