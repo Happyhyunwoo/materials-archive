@@ -2,7 +2,7 @@
 
 import React, { useEffect, useMemo, useState } from "react";
 import Papa from "papaparse";
-import { Search, Code2, BookOpen, FileText } from "lucide-react";
+import { Search, Code2, BookOpen, FileText, AlertTriangle } from "lucide-react";
 import * as Tabs from "@radix-ui/react-tabs";
 import { cn } from "@/lib/cn";
 
@@ -11,12 +11,12 @@ import { cn } from "@/lib/cn";
 ======================= */
 
 type ResourceRow = {
-  id: string;
-  title: string;
-  description: string;
-  categories: string; // comma-separated (or other)
-  tags: string; // comma-separated (or other)
-  files: string; // name::url | name::url
+  id?: string;
+  title?: string;
+  description?: string;
+  categories?: string;
+  tags?: string;
+  files?: string;
   createdAt?: string;
 };
 
@@ -60,31 +60,37 @@ function normalizeList(s: string, sep = ",") {
 }
 
 function normalizeTags(s: string): string[] {
-  // tags는 보통 comma지만, 사람이 tab/semicolon 등으로 넣을 수 있어서 완충
-  // 1) comma 우선
-  const comma = normalizeList(s, ",");
-  if (comma.length > 1) return comma;
+  const raw = (s || "").trim();
+  if (!raw) return [];
+  // prefer commas, then semicolons, then pipes, then whitespace
+  const c = normalizeList(raw, ",");
+  if (c.length > 1) return c;
+  const sc = normalizeList(raw, ";");
+  if (sc.length > 1) return sc;
+  const p = normalizeList(raw, "|");
+  if (p.length > 1) return p;
 
-  // 2) semicolon
-  const semi = normalizeList(s, ";");
-  if (semi.length > 1) return semi;
-
-  // 3) pipe
-  const pipe = normalizeList(s, "|");
-  if (pipe.length > 1) return pipe;
-
-  // 4) whitespace fallback
-  return (s || "")
+  return raw
     .split(/\s+/g)
     .map((v) => v.trim())
     .filter(Boolean);
 }
 
 function normalizeCategories(s: string): Category[] {
-  // categories는 comma 기준을 기본으로 하되, 입력 변형을 흡수
-  const raw = normalizeList(s, ",").length > 1 ? normalizeList(s, ",") : normalizeList(s, ";").length > 1 ? normalizeList(s, ";") : normalizeList(s, "|").length > 1 ? normalizeList(s, "|") : normalizeList(s, ",");
+  const raw = (s || "").trim();
+  if (!raw) return [];
 
-  return raw
+  // allow comma/semicolon/pipe; single token also allowed
+  const candidates =
+    normalizeList(raw, ",").length > 1
+      ? normalizeList(raw, ",")
+      : normalizeList(raw, ";").length > 1
+        ? normalizeList(raw, ";")
+        : normalizeList(raw, "|").length > 1
+          ? normalizeList(raw, "|")
+          : [raw];
+
+  return candidates
     .map((c) => {
       const x = c.toLowerCase().trim();
       if (x === "tool") return "python"; // backward compatibility
@@ -105,7 +111,7 @@ function normalizeFiles(s: string): FileItem[] {
       const name = (nameRaw || "").trim();
       const url = (urlRaw || "").trim();
 
-      // URL only
+      // URL-only fallback
       if (!url && name.startsWith("http")) return { name: "File", url: name };
 
       return { name: name || "File", url };
@@ -114,14 +120,16 @@ function normalizeFiles(s: string): FileItem[] {
 }
 
 function toResource(r: ResourceRow): Resource {
+  const id = (r.id || "").trim();
+  const title = (r.title || "").trim();
   return {
-    id: (r.id || "").trim(),
-    title: (r.title || "").trim(),
+    id,
+    title,
     description: (r.description || "").trim(),
-    categories: normalizeCategories(r.categories),
-    tags: normalizeTags(r.tags),
-    fileItems: normalizeFiles(r.files),
-    createdAt: r.createdAt?.trim(),
+    categories: normalizeCategories(r.categories || ""),
+    tags: normalizeTags(r.tags || ""),
+    fileItems: normalizeFiles(r.files || ""),
+    createdAt: (r.createdAt || "").trim() || undefined,
   };
 }
 
@@ -137,6 +145,16 @@ function categoryBadgeLabel(cat: Category) {
   return cat.charAt(0).toUpperCase() + cat.slice(1);
 }
 
+function detectDelimiter(text: string): { delimiter?: string; reason: string } {
+  const firstLine = (text || "").split(/\r?\n/)[0] || "";
+  // detect by presence; prioritize tab if it exists (common when people paste)
+  if (firstLine.includes("\t")) return { delimiter: "\t", reason: "Detected TAB in header line" };
+  if (firstLine.includes(",")) return { delimiter: ",", reason: "Detected comma in header line" };
+  if (firstLine.includes(";")) return { delimiter: ";", reason: "Detected semicolon in header line" };
+  // fallback: let Papa decide
+  return { delimiter: undefined, reason: "No obvious delimiter; using Papa default" };
+}
+
 /* =======================
    Main Component
 ======================= */
@@ -147,41 +165,78 @@ export default function Archive() {
   const [tab, setTab] = useState<TabKey>("all");
   const [loading, setLoading] = useState(true);
 
+  // Visible diagnostics (so “No results” is actionable)
+  const [errMsg, setErrMsg] = useState<string | null>(null);
+  const [diag, setDiag] = useState<{
+    delimiterReason?: string;
+    detectedDelimiter?: string;
+    headerLine?: string;
+    parsedFields?: string[];
+    sampleRow?: Record<string, unknown>;
+  } | null>(null);
+
   const sheetUrl = process.env.NEXT_PUBLIC_SHEET_CSV_URL;
 
   useEffect(() => {
     let cancelled = false;
 
     async function load() {
+      setLoading(true);
+      setErrMsg(null);
+      setDiag(null);
+
       try {
         if (!sheetUrl) throw new Error("NEXT_PUBLIC_SHEET_CSV_URL is not set.");
 
         const res = await fetch(sheetUrl, { cache: "no-store" });
-        if (!res.ok) throw new Error(`Failed to fetch sheet CSV: ${res.status}`);
+        if (!res.ok) throw new Error(`Failed to fetch sheet export: HTTP ${res.status}`);
 
         const text = await res.text();
 
-        // 1) 기본 파싱(보통 콤마)
-        const tryParse = (delimiter?: string) =>
-          Papa.parse<ResourceRow>(text, {
-            header: true,
-            skipEmptyLines: true,
-            delimiter,
+        const { delimiter, reason } = detectDelimiter(text);
+
+        const parsed = Papa.parse<ResourceRow>(text, {
+          header: true,
+          skipEmptyLines: true,
+          delimiter, // may be undefined; Papa default
+          transformHeader: (h) => (h || "").trim().toLowerCase(),
+        });
+
+        // Map flexible headers to our expected ones (all lowercase already)
+        // This protects against minor header variations.
+        const normalizedData: ResourceRow[] = (parsed.data || []).map((row: any) => {
+          const r = row || {};
+          return {
+            id: r.id ?? r["ID"] ?? r["Id"] ?? r["아이디"],
+            title: r.title ?? r["Title"] ?? r["제목"],
+            description: r.description ?? r["desc"] ?? r["설명"],
+            categories: r.categories ?? r["category"] ?? r["카테고리"],
+            tags: r.tags ?? r["tag"] ?? r["태그"],
+            files: r.files ?? r["file"] ?? r["자료"] ?? r["링크"],
+            createdAt: r.createdat ?? r["createdat"] ?? r["created_at"] ?? r["date"] ?? r["날짜"],
+          };
+        });
+
+        const data = normalizedData
+          .map(toResource)
+          .filter((r) => r.id && r.title);
+
+        if (!cancelled) {
+          setRows(data);
+          setDiag({
+            detectedDelimiter: delimiter ?? "(Papa default)",
+            delimiterReason: reason,
+            headerLine: (text.split(/\r?\n/)[0] || "").slice(0, 250),
+            parsedFields: parsed.meta?.fields || [],
+            sampleRow: (parsed.data && (parsed.data[0] as any)) || undefined,
           });
-
-        let parsed = tryParse();
-        let data = (parsed.data || []).map(toResource).filter((r) => r.id && r.title);
-
-        // 2) 탭(TSV) 재시도
-        if (data.length === 0) {
-          parsed = tryParse("\t");
-          data = (parsed.data || []).map(toResource).filter((r) => r.id && r.title);
         }
-
-        if (!cancelled) setRows(data);
-      } catch (e) {
+      } catch (e: any) {
         console.error(e);
-        if (!cancelled) setRows([]);
+        if (!cancelled) {
+          setRows([]);
+          setErrMsg(e?.message ? String(e.message) : "Unknown error while loading sheet.");
+        }
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -241,7 +296,9 @@ export default function Archive() {
                   onChange={(e) => setQuery(e.target.value)}
                 />
               </div>
-              <div className="mt-2 text-xs text-gray-500">{loading ? "Loading…" : `${filtered.length} result(s)`}</div>
+              <div className="mt-2 text-xs text-gray-500">
+                {loading ? "Loading…" : `${filtered.length} result(s)`}
+              </div>
             </div>
           </div>
 
@@ -269,9 +326,46 @@ export default function Archive() {
         {loading ? (
           <div className="text-sm text-gray-600">Loading…</div>
         ) : filtered.length === 0 ? (
-          <div className="rounded-2xl border bg-white p-6 text-sm text-gray-600">
-            No results. Check (1) your Google Sheets CSV link, (2) column headers, and (3) whether the row has both{" "}
-            <code className="rounded bg-gray-100 px-1">id</code> and <code className="rounded bg-gray-100 px-1">title</code>.
+          <div className="space-y-4">
+            <div className="rounded-2xl border bg-white p-6 text-sm text-gray-600">
+              No results. Check (1) your Google Sheets CSV link, (2) column headers, and (3) whether the row has both{" "}
+              <code className="rounded bg-gray-100 px-1">id</code> and{" "}
+              <code className="rounded bg-gray-100 px-1">title</code>.
+            </div>
+
+            {(errMsg || diag) && (
+              <div className="rounded-2xl border bg-white p-6">
+                <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-gray-900">
+                  <AlertTriangle className="h-4 w-4" />
+                  Diagnostics (for debugging)
+                </div>
+
+                {errMsg ? (
+                  <div className="text-sm text-red-700">
+                    <div className="font-medium">Fetch/parse error:</div>
+                    <div className="mt-1 whitespace-pre-wrap">{errMsg}</div>
+                  </div>
+                ) : (
+                  <div className="space-y-2 text-sm text-gray-700">
+                    <div>
+                      <span className="font-medium">Delimiter:</span>{" "}
+                      {diag?.detectedDelimiter}{" "}
+                      <span className="text-gray-500">({diag?.delimiterReason})</span>
+                    </div>
+                    <div>
+                      <span className="font-medium">Header line (first 250 chars):</span>
+                      <div className="mt-1 rounded-lg bg-gray-50 p-2 font-mono text-xs text-gray-700">
+                        {diag?.headerLine || "(none)"}
+                      </div>
+                    </div>
+                    <div>
+                      <span className="font-medium">Parsed fields:</span>{" "}
+                      <span className="font-mono text-xs">{(diag?.parsedFields || []).join(", ") || "(none)"}</span>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         ) : (
           <div className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-3">
