@@ -13,12 +13,11 @@ import {
   AlertTriangle,
   RefreshCcw,
   Tag as TagIcon,
+  CalendarDays,
 } from "lucide-react";
 
 /* =======================
    Optional hard-coded fallback (recommended for stability)
-   - If env var is missing, the app will use this URL.
-   - Set to "" to disable fallback.
 ======================= */
 const FALLBACK_SHEET_CSV_URL =
   "https://docs.google.com/spreadsheets/d/e/2PACX-1vRhrERIo-anAjRDVqZNiaU0TKDzyHOdVtYvPH4_VQFQySq_hESmL69ez3rxmRs88N1G6C5I3ZTd8d_t/pub?output=csv";
@@ -33,7 +32,7 @@ type ResourceRow = {
   categories?: string;
   tags?: string;
   files?: string;
-  createdAt?: string;
+  createdAt?: string; // web-app upload date (from sheet)
 };
 
 type FileItem = { name: string; url: string };
@@ -106,7 +105,7 @@ function normalizeCategories(s: string): Category[] {
   return tokens
     .map((c) => {
       const x = c.toLowerCase().trim();
-      if (x === "tool") return "python"; // backward compatibility
+      if (x === "tool") return "python";
       if (x === "python code") return "python";
       if (x === "py") return "python";
       return x;
@@ -130,6 +129,24 @@ function normalizeFiles(s: string): FileItem[] {
     .filter((x) => x.url);
 }
 
+function normalizeCreatedAt(s?: string) {
+  // We want a stable "YYYY-MM-DD" display if possible.
+  const raw = (s || "").trim();
+  if (!raw) return undefined;
+
+  // If already YYYY-MM-DD, keep it.
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
+
+  // Try Date parsing for other formats (best-effort).
+  const d = new Date(raw);
+  if (Number.isNaN(d.getTime())) return raw; // show as-is if unparseable
+
+  const yyyy = String(d.getFullYear()).padStart(4, "0");
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd}`;
+}
+
 function toResource(r: ResourceRow): Resource {
   return {
     id: (r.id || "").trim(),
@@ -138,7 +155,7 @@ function toResource(r: ResourceRow): Resource {
     categories: normalizeCategories(r.categories || ""),
     tags: normalizeTags(r.tags || ""),
     fileItems: normalizeFiles(r.files || ""),
-    createdAt: (r.createdAt || "").trim() || undefined,
+    createdAt: normalizeCreatedAt(r.createdAt),
   };
 }
 
@@ -153,6 +170,21 @@ function detectDelimiter(text: string): { delimiter?: string; reason: string } {
 function categoryLabel(cat: Category) {
   if (cat === "python") return "Python code";
   return cat.charAt(0).toUpperCase() + cat.slice(1);
+}
+
+// Category badge color mapping (Tailwind classes)
+function categoryBadgeClass(cat: Category) {
+  // softer palette, readable on white
+  switch (cat) {
+    case "python":
+      return "border-blue-200 bg-blue-50 text-blue-800";
+    case "lecture":
+      return "border-emerald-200 bg-emerald-50 text-emerald-800";
+    case "article":
+      return "border-violet-200 bg-violet-50 text-violet-800";
+    default:
+      return "border-gray-200 bg-gray-50 text-gray-700";
+  }
 }
 
 /* =======================
@@ -200,7 +232,6 @@ export default function Archive() {
         transformHeader: (h) => (h || "").trim().toLowerCase(),
       });
 
-      // Map common header variations into expected keys (lowercased already)
       const normalizedData: ResourceRow[] = (parsed.data || []).map((r: any) => ({
         id: r?.id ?? r?.["ID"] ?? r?.["Id"],
         title: r?.title ?? r?.["Title"],
@@ -208,7 +239,14 @@ export default function Archive() {
         categories: r?.categories ?? r?.["category"] ?? r?.["카테고리"],
         tags: r?.tags ?? r?.["tag"] ?? r?.["태그"],
         files: r?.files ?? r?.["file"] ?? r?.["자료"] ?? r?.["링크"],
-        createdAt: r?.createdat ?? r?.["created_at"] ?? r?.["createdat"] ?? r?.["date"] ?? r?.["날짜"] ?? r?.createdat,
+        createdAt:
+          r?.createdat ??
+          r?.["created_at"] ??
+          r?.["createdat"] ??
+          r?.["date"] ??
+          r?.["날짜"] ??
+          r?.createdat ??
+          r?.createdat,
       }));
 
       const data = normalizedData.map(toResource).filter((x) => x.id && x.title);
@@ -245,11 +283,25 @@ export default function Archive() {
     return base;
   }, [rows]);
 
+  // Optional: sort by createdAt (desc) when available
+  const sortedRows = useMemo(() => {
+    const copy = [...rows];
+    copy.sort((a, b) => {
+      const ax = a.createdAt ? Date.parse(a.createdAt) : NaN;
+      const bx = b.createdAt ? Date.parse(b.createdAt) : NaN;
+      if (Number.isNaN(ax) && Number.isNaN(bx)) return 0;
+      if (Number.isNaN(ax)) return 1;
+      if (Number.isNaN(bx)) return -1;
+      return bx - ax;
+    });
+    return copy;
+  }, [rows]);
+
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     const active = TABS.find((t) => t.key === tab) || TABS[0];
 
-    return rows
+    return sortedRows
       .filter((r) => {
         if (active.key === "all") return true;
         return r.categories.some((c) => active.match.includes(c));
@@ -262,12 +314,13 @@ export default function Archive() {
           r.tags.join(" "),
           r.categories.map(categoryLabel).join(" "),
           r.fileItems.map((f) => f.name).join(" "),
+          r.createdAt || "",
         ]
           .join(" ")
           .toLowerCase();
         return hay.includes(q);
       });
-  }, [rows, query, tab]);
+  }, [sortedRows, query, tab]);
 
   return (
     <div className="min-h-screen bg-gradient-to-b from-white to-gray-50">
@@ -284,7 +337,7 @@ export default function Archive() {
                 <Search className="absolute left-3 top-3.5 h-4 w-4 text-gray-500" />
                 <input
                   className="w-full rounded-xl border bg-white px-10 py-3 text-sm outline-none focus:ring-2 focus:ring-gray-200"
-                  placeholder="Search: title, tags, file names..."
+                  placeholder="Search: title, tags, file names, date..."
                   value={query}
                   onChange={(e) => setQuery(e.target.value)}
                 />
@@ -341,7 +394,7 @@ export default function Archive() {
             <div className="rounded-2xl border bg-white p-6 text-sm text-gray-700">
               No results.
               <div className="mt-2 text-sm text-gray-600">
-                If this used to work, the most common causes are: missing env var, export URL changed, or delimiter/header mismatch.
+                Common causes: missing env var, export URL changed, delimiter/header mismatch.
               </div>
             </div>
 
@@ -408,19 +461,39 @@ function ResourceCard({ r }: { r: Resource }) {
   return (
     <div className="rounded-2xl border bg-white p-6 shadow-sm">
       <div className="flex items-start justify-between gap-3">
-        <div className="text-base font-semibold leading-snug">{r.title}</div>
+        <div className="min-w-0">
+          <div className="truncate text-base font-semibold leading-snug">{r.title}</div>
+
+          <div className="mt-2 flex items-center gap-2 text-xs text-gray-600">
+            <CalendarDays className="h-4 w-4 text-gray-400" />
+            <span className="font-medium">Uploaded:</span>
+            <span className="font-mono">{r.createdAt || "-"}</span>
+          </div>
+        </div>
       </div>
 
       {r.description ? (
-        <div className="mt-2 text-sm text-gray-600">{r.description}</div>
+        <div className="mt-3 text-sm text-gray-600">{r.description}</div>
       ) : (
-        <div className="mt-2 text-sm text-gray-400">No description.</div>
+        <div className="mt-3 text-sm text-gray-400">No description.</div>
       )}
 
       <div className="mt-4 flex flex-wrap gap-2">
-        {cats.map((c) => (
-          <Chip key={`${r.id}-c-${c}`}>{categoryLabel(c)}</Chip>
-        ))}
+        {cats.length === 0 ? (
+          <span className="text-xs text-gray-400">No category.</span>
+        ) : (
+          cats.map((c) => (
+            <span
+              key={`${r.id}-c-${c}`}
+              className={cn(
+                "inline-flex items-center rounded-xl border px-3 py-1 text-xs",
+                categoryBadgeClass(c)
+              )}
+            >
+              {categoryLabel(c)}
+            </span>
+          ))
+        )}
       </div>
 
       {tags.length > 0 && (
@@ -464,14 +537,6 @@ function ResourceCard({ r }: { r: Resource }) {
         )}
       </div>
     </div>
-  );
-}
-
-function Chip({ children }: { children: React.ReactNode }) {
-  return (
-    <span className="inline-flex items-center rounded-xl border bg-gray-50 px-3 py-1 text-xs text-gray-700">
-      {children}
-    </span>
   );
 }
 
