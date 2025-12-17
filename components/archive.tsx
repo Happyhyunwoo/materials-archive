@@ -196,7 +196,7 @@ export default function Archive() {
       const parsed = Papa.parse(text, {
         header: true,
         skipEmptyLines: true,
-        transformHeader: (h) => h.toLowerCase().trim(),
+        transformHeader: (h: string) => (h || "").toLowerCase().trim(),
       });
       const data = ((parsed.data as any[]) || [])
   .map(toResource)
