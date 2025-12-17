@@ -2,28 +2,21 @@
 
 import React, { useEffect, useMemo, useState } from "react";
 import Papa from "papaparse";
-import { Search } from "lucide-react";
+import { Search, Code2, BookOpen, FileText } from "lucide-react";
 import * as Tabs from "@radix-ui/react-tabs";
 import { cn } from "@/lib/cn";
-
-/* =======================
-   Types
-======================= */
 
 type ResourceRow = {
   id: string;
   title: string;
   description: string;
   categories: string; // comma-separated
-  tags: string;       // comma-separated
-  files: string;      // name::url | name::url
+  tags: string; // comma-separated
+  files: string; // name::url | name::url
   createdAt?: string;
 };
 
-type FileItem = {
-  name: string;
-  url: string;
-};
+type FileItem = { name: string; url: string };
 
 type Resource = {
   id: string;
@@ -35,38 +28,38 @@ type Resource = {
   createdAt?: string;
 };
 
-/* =======================
-   Helpers
-======================= */
-
-function normalizeList(s: string, sep = ","): string[] {
+function normalizeList(s: string, sep = ",") {
   return (s || "")
     .split(sep)
-    .map(v => v.trim())
+    .map((v) => v.trim())
     .filter(Boolean);
+}
+
+function normalizeCategories(s: string): string[] {
+  return normalizeList(s).map((c) => {
+    const x = c.toLowerCase();
+    if (x === "tool") return "python"; // backward compatibility
+    if (x === "python code") return "python";
+    return x;
+  });
 }
 
 function normalizeFiles(s: string): FileItem[] {
   return (s || "")
     .split("|")
-    .map(v => v.trim())
+    .map((v) => v.trim())
     .filter(Boolean)
-    .map(part => {
+    .map((part) => {
       const [nameRaw, urlRaw] = part.split("::");
       const name = (nameRaw || "").trim();
       const url = (urlRaw || "").trim();
 
-      // fallback: URL만 들어온 경우
       if (!url && name.startsWith("http")) {
         return { name: "File", url: name };
       }
-
-      return {
-        name: name || "File",
-        url,
-      };
+      return { name: name || "File", url };
     })
-    .filter(f => f.url);
+    .filter((x) => x.url);
 }
 
 function toResource(r: ResourceRow): Resource {
@@ -74,23 +67,33 @@ function toResource(r: ResourceRow): Resource {
     id: (r.id || "").trim(),
     title: (r.title || "").trim(),
     description: (r.description || "").trim(),
-    categories: normalizeList(r.categories).map(c => c.toLowerCase()),
+    categories: normalizeCategories(r.categories),
     tags: normalizeList(r.tags),
     fileItems: normalizeFiles(r.files),
     createdAt: r.createdAt?.trim(),
   };
 }
 
-/* =======================
-   Tabs
-======================= */
+const TABS = [
+  { key: "all", label: "All", match: ["article", "lecture", "python"] },
+  { key: "python", label: "Python code", match: ["python"] },
+  { key: "lecture", label: "Lecture", match: ["lecture"] },
+  { key: "article", label: "Article", match: ["article"] },
+] as const;
 
-const TAB_KEYS = ["all", "article", "lecture", "tool"] as const;
-type TabKey = typeof TAB_KEYS[number];
+type TabKey = (typeof TABS)[number]["key"];
 
-/* =======================
-   Main Component
-======================= */
+function tabIcon(key: TabKey) {
+  if (key === "python") return <Code2 className="h-4 w-4" />;
+  if (key === "lecture") return <BookOpen className="h-4 w-4" />;
+  if (key === "article") return <FileText className="h-4 w-4" />;
+  return null;
+}
+
+function categoryBadgeLabel(cat: string) {
+  if (cat === "python") return "Python code";
+  return cat.charAt(0).toUpperCase() + cat.slice(1);
+}
 
 export default function Archive() {
   const [rows, setRows] = useState<Resource[]>([]);
@@ -105,14 +108,10 @@ export default function Archive() {
 
     async function load() {
       try {
-        if (!sheetUrl) {
-          throw new Error("NEXT_PUBLIC_SHEET_CSV_URL is not set");
-        }
+        if (!sheetUrl) throw new Error("NEXT_PUBLIC_SHEET_CSV_URL is not set.");
 
         const res = await fetch(sheetUrl, { cache: "no-store" });
-        if (!res.ok) {
-          throw new Error(`Failed to fetch CSV: ${res.status}`);
-        }
+        if (!res.ok) throw new Error(`Failed to fetch sheet CSV: ${res.status}`);
 
         const csvText = await res.text();
         const parsed = Papa.parse<ResourceRow>(csvText, {
@@ -120,13 +119,11 @@ export default function Archive() {
           skipEmptyLines: true,
         });
 
-        const data = (parsed.data || [])
-          .map(toResource)
-          .filter(r => r.id && r.title);
+        const data = (parsed.data || []).map(toResource).filter((r) => r.id && r.title);
 
         if (!cancelled) setRows(data);
-      } catch (err) {
-        console.error(err);
+      } catch (e) {
+        console.error(e);
         if (!cancelled) setRows([]);
       } finally {
         if (!cancelled) setLoading(false);
@@ -140,33 +137,32 @@ export default function Archive() {
   }, [sheetUrl]);
 
   const counts = useMemo(() => {
-    const c: Record<TabKey, number> = {
-      all: rows.length,
-      article: 0,
-      lecture: 0,
-      tool: 0,
-    };
+    const base = Object.fromEntries(TABS.map((t) => [t.key, 0])) as Record<TabKey, number>;
+    base.all = rows.length;
 
     for (const r of rows) {
-      if (r.categories.includes("article")) c.article += 1;
-      if (r.categories.includes("lecture")) c.lecture += 1;
-      if (r.categories.includes("tool")) c.tool += 1;
+      for (const t of TABS) {
+        if (t.key === "all") continue;
+        if (r.categories.some((c) => t.match.includes(c))) {
+          base[t.key] += 1;
+        }
+      }
     }
-    return c;
+    return base;
   }, [rows]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
+    const activeTab = TABS.find((t) => t.key === tab) || TABS[0];
+
     return rows
-      .filter(r => (tab === "all" ? true : r.categories.includes(tab)))
-      .filter(r => {
+      .filter((r) => {
+        if (activeTab.key === "all") return true;
+        return r.categories.some((c) => activeTab.match.includes(c));
+      })
+      .filter((r) => {
         if (!q) return true;
-        const hay = [
-          r.title,
-          r.description,
-          r.tags.join(" "),
-          r.categories.join(" "),
-        ]
+        const hay = [r.title, r.description, r.tags.join(" "), r.categories.join(" ")]
           .join(" ")
           .toLowerCase();
         return hay.includes(q);
@@ -174,81 +170,80 @@ export default function Archive() {
   }, [rows, query, tab]);
 
   return (
-    <div className="min-h-screen bg-white">
-      {/* Header */}
-      <header className="border-b">
-        <div className="mx-auto max-w-6xl px-6 py-5">
-          <div className="flex items-center gap-3">
-            <div className="h-8 w-8 rounded-lg border flex items-center justify-center">
-              <span className="text-sm font-semibold">📘</span>
+    <div className="min-h-screen bg-gradient-to-b from-white to-gray-50">
+      <header className="border-b bg-white/80 backdrop-blur">
+        <div className="mx-auto max-w-6xl px-6 py-6">
+          <div className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
+            <div>
+              <div className="text-2xl font-semibold tracking-tight">Yonsei HW Lab</div>
+              <div className="mt-1 text-sm text-gray-600">Materials Archive</div>
             </div>
-            <div className="text-xl font-semibold">Materials Archive</div>
+
+            <div className="w-full md:w-[420px]">
+              <div className="relative">
+                <Search className="absolute left-3 top-3.5 h-4 w-4 text-gray-500" />
+                <input
+                  className="w-full rounded-xl border bg-white px-10 py-3 text-sm outline-none focus:ring-2"
+                  placeholder="Search (title / description / tags)..."
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                />
+              </div>
+              <div className="mt-2 text-xs text-gray-500">
+                {loading ? "Loading…" : `${filtered.length} result(s)`}
+              </div>
+            </div>
+          </div>
+
+          <div className="mt-5">
+            <Tabs.Root value={tab} onValueChange={(v) => setTab(v as TabKey)}>
+              <Tabs.List className="inline-flex flex-wrap gap-2">
+                {TABS.map((t) => (
+                  <TabTrigger key={t.key} value={t.key as TabKey}>
+                    <span className="inline-flex items-center gap-2">
+                      {tabIcon(t.key as TabKey)}
+                      <span>{t.label}</span>
+                      <span className="rounded-md bg-black/5 px-2 py-0.5 text-xs text-gray-700">
+                        {t.key === "all" ? counts.all : counts[t.key as TabKey]}
+                      </span>
+                    </span>
+                  </TabTrigger>
+                ))}
+              </Tabs.List>
+            </Tabs.Root>
           </div>
         </div>
       </header>
 
-      {/* Main */}
       <main className="mx-auto max-w-6xl px-6 py-8">
-        {/* Search */}
-        <div className="mb-5">
-          <div className="relative">
-            <Search className="absolute left-3 top-3.5 h-4 w-4 text-gray-500" />
-            <input
-              className="w-full rounded-xl border bg-white px-10 py-3 text-sm outline-none focus:ring-2"
-              placeholder="Search by title, description, tags..."
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-            />
+        {loading ? (
+          <div className="text-sm text-gray-600">Loading…</div>
+        ) : filtered.length === 0 ? (
+          <div className="rounded-2xl border bg-white p-6 text-sm text-gray-600">
+            No results. Check (1) your Google Sheets CSV link, (2) column headers, and (3) whether
+            the row has both <code className="rounded bg-gray-100 px-1">id</code> and{" "}
+            <code className="rounded bg-gray-100 px-1">title</code>.
           </div>
-        </div>
-
-        {/* Tabs */}
-        <Tabs.Root value={tab} onValueChange={(v) => setTab(v as TabKey)}>
-          <Tabs.List className="inline-flex rounded-xl bg-gray-100 p-1">
-            <TabTrigger value="all">All ({counts.all})</TabTrigger>
-            <TabTrigger value="article">article ({counts.article})</TabTrigger>
-            <TabTrigger value="lecture">lecture ({counts.lecture})</TabTrigger>
-            <TabTrigger value="tool">tool ({counts.tool})</TabTrigger>
-          </Tabs.List>
-        </Tabs.Root>
-
-        {/* Cards */}
-        <div className="mt-6">
-          {loading ? (
-            <div className="text-sm text-gray-600">Loading…</div>
-          ) : filtered.length === 0 ? (
-            <div className="text-sm text-gray-600">No results.</div>
-          ) : (
-            <div className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-3">
-              {filtered.map(r => (
-                <Card key={r.id} r={r} />
-              ))}
-            </div>
-          )}
-        </div>
+        ) : (
+          <div className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-3">
+            {filtered.map((r) => (
+              <Card key={r.id} r={r} />
+            ))}
+          </div>
+        )}
       </main>
     </div>
   );
 }
 
-/* =======================
-   Subcomponents
-======================= */
-
-function TabTrigger({
-  value,
-  children,
-}: {
-  value: TabKey;
-  children: React.ReactNode;
-}) {
+function TabTrigger({ value, children }: { value: TabKey; children: React.ReactNode }) {
   return (
     <Tabs.Trigger
       value={value}
       className={cn(
-        "px-4 py-2 text-sm rounded-lg",
-        "data-[state=active]:bg-white data-[state=active]:shadow",
-        "text-gray-700"
+        "rounded-xl border bg-white px-4 py-2 text-sm shadow-sm",
+        "hover:bg-gray-50 data-[state=active]:border-gray-900 data-[state=active]:ring-2",
+        "data-[state=active]:ring-gray-200"
       )}
     >
       {children}
@@ -257,23 +252,41 @@ function TabTrigger({
 }
 
 function Card({ r }: { r: Resource }) {
+  const labels = Array.from(
+    new Set(
+      r.categories.map((c) => (c === "python" ? "python" : c.toLowerCase())).filter(Boolean)
+    )
+  );
+
   return (
     <div className="rounded-2xl border bg-white p-6 shadow-sm">
-      <div className="text-lg font-semibold">{r.title}</div>
-
-      <div className="mt-2 text-sm text-gray-600 line-clamp-2">
-        {r.description}
+      <div className="flex items-start justify-between gap-3">
+        <div className="text-lg font-semibold leading-snug">{r.title}</div>
       </div>
 
+      {r.description ? (
+        <div className="mt-2 text-sm text-gray-600 line-clamp-3">{r.description}</div>
+      ) : (
+        <div className="mt-2 text-sm text-gray-400">No description.</div>
+      )}
+
       <div className="mt-4 flex flex-wrap gap-2">
-        {r.categories.map(c => (
-          <Chip key={`${r.id}-${c}`}>{c}</Chip>
+        {labels.map((c) => (
+          <Chip key={`${r.id}-${c}`}>{categoryBadgeLabel(c)}</Chip>
         ))}
       </div>
 
+      {r.tags.length > 0 && (
+        <div className="mt-3 flex flex-wrap gap-2">
+          {r.tags.map((t) => (
+            <Tag key={`${r.id}-t-${t}`}>{t}</Tag>
+          ))}
+        </div>
+      )}
+
       <div className="mt-4 flex items-center gap-2 text-sm text-gray-600">
         <span className="inline-flex items-center gap-2">
-          <span className="text-base">📄</span>
+          <span className="text-base">📎</span>
           {r.fileItems.length} file(s)
         </span>
       </div>
@@ -282,7 +295,7 @@ function Card({ r }: { r: Resource }) {
         <div className="mt-4 space-y-2">
           {r.fileItems.map((f, idx) => (
             <a
-              key={`${r.id}-file-${idx}`}
+              key={`${r.id}-f-${idx}`}
               href={f.url}
               target="_blank"
               rel="noreferrer"
@@ -301,8 +314,15 @@ function Card({ r }: { r: Resource }) {
 function Chip({ children }: { children: React.ReactNode }) {
   return (
     <span className="inline-flex items-center gap-2 rounded-xl border bg-gray-50 px-3 py-1 text-xs text-gray-700">
-      <span className="text-sm">🏷️</span>
       {children}
+    </span>
+  );
+}
+
+function Tag({ children }: { children: React.ReactNode }) {
+  return (
+    <span className="inline-flex items-center rounded-full bg-gray-100 px-3 py-1 text-xs text-gray-700">
+      #{children}
     </span>
   );
 }
