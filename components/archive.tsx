@@ -193,12 +193,15 @@ export default function Archive() {
       const res = await fetch(sheetUrl, { cache: "no-store" });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const text = await res.text();
-      const parsed = Papa.parse<any>(text, {
+      const parsed = Papa.parse(text, {
         header: true,
         skipEmptyLines: true,
         transformHeader: (h) => h.toLowerCase().trim(),
       });
-      const data = (parsed.data || []).map(toResource).filter((r) => r.id && r.title);
+      const data = ((parsed.data as any[]) || [])
+  .map(toResource)
+  .filter((r) => r.id && r.title);
+
       setRows(data);
     } catch (e: any) {
       setErrMsg(e.message);
