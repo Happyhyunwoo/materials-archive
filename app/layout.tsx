@@ -34,6 +34,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               </Link>
 
               <nav className="flex flex-wrap gap-2">
+<NavLink href="/">Home</NavLink>
                 <NavLink href="/people">People</NavLink>
                 <NavLink href="/projects">Projects</NavLink>
                 <NavLink href="/publications">Publications</NavLink>
