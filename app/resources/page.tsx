@@ -1,6 +1,6 @@
 import Archive from "@/components/Archive";
 
-export default function Page() {
+export default function ResourcesPage() {
   return <Archive />;
 }
 
