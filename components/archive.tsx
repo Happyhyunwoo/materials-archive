@@ -1,7 +1,6 @@
 "use client";
 
 import React, { useEffect, useMemo, useState } from "react";
-import Image from "next/image";
 import Papa from "papaparse";
 import * as Tabs from "@radix-ui/react-tabs";
 import {
@@ -121,8 +120,7 @@ function normalizeCategories(s: string): Category[] {
       if (x === "tool" || x === "code" || x === "python code" || x === "py") return "python";
 
       // lecture variants
-      if (x === "ppt" || x === "ppts" || x === "slide" || x === "slides" || x === "lecture ppt")
-        return "lecture";
+      if (x === "ppt" || x === "ppts" || x === "slide" || x === "slides" || x === "lecture ppt") return "lecture";
 
       // article variants
       if (x === "paper" || x === "reading" || x === "readings") return "article";
@@ -214,6 +212,7 @@ function categoryBadgeClass(cat: Category) {
 
 /* =======================
    Component
+   - Header/footer removed so global app/layout.tsx can own the logo/navigation.
 ======================= */
 export default function Archive() {
   const [rows, setRows] = useState<Resource[]>([]);
@@ -356,69 +355,55 @@ export default function Archive() {
   }, [sortedRows, query, tab]);
 
   return (
-    <div className="min-h-screen bg-gradient-to-b from-white to-gray-50">
-      <header className="border-b bg-white/80 backdrop-blur">
-        <div className="mx-auto max-w-6xl px-6 py-6">
-          <div className="mb-6 flex items-center gap-4 rounded-2xl border bg-white px-6 py-4 shadow-sm">
-            <Image src="/yonsei-logo.png" alt="Yonsei University" width={56} height={56} priority />
-            <div>
-              <div className="text-xl font-semibold tracking-tight text-gray-900">Yonsei HW Lab</div>
-              <div className="text-sm text-gray-600">Materials Archive</div>
-            </div>
-          </div>
-
-          <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-            <div className="relative w-full md:w-[520px]">
-              <Search className="absolute left-3 top-3.5 h-4 w-4 text-gray-500" />
-              <input
-                className="w-full rounded-xl border bg-white px-10 py-3 text-sm outline-none focus:ring-2 focus:ring-gray-200"
-                placeholder="Search: title, tags, file names, date..."
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-              />
-            </div>
-
-            <button
-              onClick={load}
-              className="inline-flex items-center justify-center gap-2 rounded-xl border bg-white px-4 py-3 text-sm shadow-sm hover:bg-gray-50"
-              type="button"
-              title="Reload"
-            >
-              <RefreshCcw className="h-4 w-4" />
-              Reload
-            </button>
-          </div>
-
-          <div className="mt-5 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-            <Tabs.Root value={tab} onValueChange={(v) => setTab(v as TabKey)}>
-              <Tabs.List className="inline-flex flex-wrap gap-2">
-                {TABS.map((t) => (
-                  <Tabs.Trigger
-                    key={t.key}
-                    value={t.key}
-                    className={cx(
-                      "rounded-xl border bg-white px-4 py-2 text-sm shadow-sm",
-                      "hover:bg-gray-50 data-[state=active]:border-gray-900 data-[state=active]:ring-2 data-[state=active]:ring-gray-200"
-                    )}
-                  >
-                    <span className="inline-flex items-center gap-2">
-                      {t.icon}
-                      <span>{t.label}</span>
-                      <span className="rounded-md bg-black/5 px-2 py-0.5 text-xs text-gray-700">
-                        {counts[t.key]}
-                      </span>
-                    </span>
-                  </Tabs.Trigger>
-                ))}
-              </Tabs.List>
-            </Tabs.Root>
-
-            <div className="text-xs text-gray-600">{loading ? "Loading…" : `Showing ${filtered.length} result(s)`}</div>
-          </div>
+    <div className="mx-auto max-w-6xl px-6 py-8">
+      <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+        <div className="relative w-full md:w-[520px]">
+          <Search className="absolute left-3 top-3.5 h-4 w-4 text-gray-500" />
+          <input
+            className="w-full rounded-xl border bg-white px-10 py-3 text-sm outline-none focus:ring-2 focus:ring-gray-200"
+            placeholder="Search: title, tags, file names, date..."
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+          />
         </div>
-      </header>
 
-      <main className="mx-auto max-w-6xl px-6 py-8">
+        <button
+          onClick={load}
+          className="inline-flex items-center justify-center gap-2 rounded-xl border bg-white px-4 py-3 text-sm shadow-sm hover:bg-gray-50"
+          type="button"
+          title="Reload"
+        >
+          <RefreshCcw className="h-4 w-4" />
+          Reload
+        </button>
+      </div>
+
+      <div className="mt-5 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+        <Tabs.Root value={tab} onValueChange={(v) => setTab(v as TabKey)}>
+          <Tabs.List className="inline-flex flex-wrap gap-2">
+            {TABS.map((t) => (
+              <Tabs.Trigger
+                key={t.key}
+                value={t.key}
+                className={cx(
+                  "rounded-xl border bg-white px-4 py-2 text-sm shadow-sm",
+                  "hover:bg-gray-50 data-[state=active]:border-gray-900 data-[state=active]:ring-2 data-[state=active]:ring-gray-200"
+                )}
+              >
+                <span className="inline-flex items-center gap-2">
+                  {t.icon}
+                  <span>{t.label}</span>
+                  <span className="rounded-md bg-black/5 px-2 py-0.5 text-xs text-gray-700">{counts[t.key]}</span>
+                </span>
+              </Tabs.Trigger>
+            ))}
+          </Tabs.List>
+        </Tabs.Root>
+
+        <div className="text-xs text-gray-600">{loading ? "Loading…" : `Showing ${filtered.length} result(s)`}</div>
+      </div>
+
+      <div className="mt-6">
         {loading ? (
           <div className="text-sm text-gray-600">Loading…</div>
         ) : errMsg ? (
@@ -471,13 +456,7 @@ export default function Archive() {
             ))}
           </div>
         )}
-      </main>
-
-      <footer className="border-t bg-white/60">
-        <div className="mx-auto max-w-6xl px-6 py-6 text-xs text-gray-500">
-          Public archive powered by Google Sheets export.
-        </div>
-      </footer>
+      </div>
     </div>
   );
 }
