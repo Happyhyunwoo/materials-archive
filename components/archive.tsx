@@ -95,6 +95,12 @@ function normalizeTags(s: string): string[] {
   return raw.split(/\s+/g).map((v) => v.trim()).filter(Boolean);
 }
 
+/**
+ * More forgiving category normalization:
+ * - Accepts lecture variants like PPT / slides
+ * - Accepts python variants like tool / code / py
+ * - Accepts article variants like paper / readings
+ */
 function normalizeCategories(s: string): Category[] {
   const raw = (s || "").trim();
   if (!raw) return [];
@@ -109,11 +115,18 @@ function normalizeCategories(s: string): Category[] {
           : [raw];
 
   return tokens
-    .map((c) => {
-      const x = (c || "").toLowerCase().trim();
-      if (x === "tool") return "python";
-      if (x === "python code") return "python";
-      if (x === "py") return "python";
+    .map((c) => (c || "").toLowerCase().trim())
+    .map((x) => {
+      // python variants
+      if (x === "tool" || x === "code" || x === "python code" || x === "py") return "python";
+
+      // lecture variants
+      if (x === "ppt" || x === "ppts" || x === "slide" || x === "slides" || x === "lecture ppt")
+        return "lecture";
+
+      // article variants
+      if (x === "paper" || x === "reading" || x === "readings") return "article";
+
       return x;
     })
     .filter((x): x is Category => (CATEGORY_KEYS as readonly string[]).includes(x));
@@ -229,7 +242,9 @@ export default function Archive() {
     setDiag(null);
 
     try {
-      if (!sheetUrl) throw new Error("NEXT_PUBLIC_SHEET_CSV_URL is not set (and no fallback URL is configured).");
+      if (!sheetUrl) {
+        throw new Error("NEXT_PUBLIC_SHEET_CSV_URL is not set (and no fallback URL is configured).");
+      }
 
       setUsedUrl(sheetUrl);
 
@@ -251,9 +266,14 @@ export default function Archive() {
         id: r?.id ?? r?.["ID"] ?? r?.["Id"],
         title: r?.title ?? r?.["Title"],
         description: r?.description ?? r?.["desc"] ?? r?.["설명"],
-        categories: r?.categories ?? r?.["category"] ?? r?.["카테고리"],
-        tags: r?.tags ?? r?.["tag"] ?? r?.["태그"],
-        files: r?.files ?? r?.["file"] ?? r?.["자료"] ?? r?.["링크"],
+
+        // NOTE: accept both "categories" and "category" (and Korean)
+        categories: r?.categories ?? r?.category ?? r?.["카테고리"],
+
+        tags: r?.tags ?? r?.tag ?? r?.["태그"],
+
+        files: r?.files ?? r?.file ?? r?.["자료"] ?? r?.["링크"],
+
         createdAt:
           r?.createdat ??
           r?.["created_at"] ??
@@ -262,6 +282,7 @@ export default function Archive() {
           r?.["날짜"],
       }));
 
+      // Keep only rows that have id and title
       const data = normalizedRows.map(toResource).filter((x) => x.id && x.title);
       setRows(data);
 
@@ -270,7 +291,8 @@ export default function Archive() {
         delimiter: delimiter ?? "(Papa default)",
         delimiterReason: reason,
         headerLine: (text.split(/\r?\n/)[0] || "").slice(0, 200),
-        parsedFields: (parsed.meta && (parsed.meta as any).fields) ? (parsed.meta as any).fields : [],
+        parsedFields:
+          parsed.meta && (parsed.meta as any).fields ? ((parsed.meta as any).fields as string[]) : [],
       });
     } catch (e: any) {
       setRows([]);
@@ -438,8 +460,8 @@ export default function Archive() {
           <div className="rounded-2xl border bg-white p-6 text-sm text-gray-700">
             No results.
             <div className="mt-2 text-sm text-gray-600">
-              Check your Google Sheets CSV link, column headers, and whether the row has both <span className="font-mono">id</span>{" "}
-              and <span className="font-mono">title</span>.
+              Check your Google Sheets CSV link, column headers, and whether the row has both{" "}
+              <span className="font-mono">id</span> and <span className="font-mono">title</span>.
             </div>
           </div>
         ) : (
@@ -452,7 +474,9 @@ export default function Archive() {
       </main>
 
       <footer className="border-t bg-white/60">
-        <div className="mx-auto max-w-6xl px-6 py-6 text-xs text-gray-500">Public archive powered by Google Sheets export.</div>
+        <div className="mx-auto max-w-6xl px-6 py-6 text-xs text-gray-500">
+          Public archive powered by Google Sheets export.
+        </div>
       </footer>
     </div>
   );
