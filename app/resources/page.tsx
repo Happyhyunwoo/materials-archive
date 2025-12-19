@@ -1,4 +1,4 @@
-import Archive from "@/components/Archive";
+import Archive from "@/components/archive";
 
 export default function ResourcesPage() {
   return <Archive />;
