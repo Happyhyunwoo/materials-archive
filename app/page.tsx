@@ -9,7 +9,7 @@ export default function HomePage() {
       {/* Description */}
       <p className="mt-6 max-w-3xl text-lg leading-8 text-gray-700">
         The Yonsei HW Lab investigates second language acquisition and sentence
-        processing through corpus-based analysis, experimental paradigms, natural language processing  analysis. Our research focuses on usage-based approaches
+        processing through corpus-based analysis, natural language processing analysis, and experimental paradigms. Our research focuses on usage-based approaches
         to grammar, lexical-semantic development, and cross-linguistic variation.
       </p>
 
