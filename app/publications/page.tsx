@@ -2,18 +2,32 @@
 
 import React, { useEffect, useMemo, useState } from "react";
 import Papa from "papaparse";
-import { ExternalLink, FileText, Search, RefreshCcw, AlertTriangle } from "lucide-react";
+import {
+  ExternalLink,
+  FileText,
+  Search,
+  RefreshCcw,
+  AlertTriangle,
+  ChevronDown,
+  ChevronUp,
+} from "lucide-react";
 
 type PublicationRow = {
   id?: string;
   title?: string;
   authors?: string;
   year?: string | number;
+
+  // New schema (preferred)
+  journal?: string;
+
+  // Backward-compat schema (keep)
   venue?: string; // journal/conference
-  type?: string;  // journal, conference, etc.
+  type?: string; // journal, conference, etc.
+
   tags?: string;
-  url?: string;   // landing page
-  pdf?: string;   // direct pdf link
+  url?: string; // landing page
+  pdf?: string; // direct pdf link
   doi?: string;
   abstract?: string;
   order?: string | number;
@@ -24,8 +38,11 @@ type Publication = {
   title: string;
   authors?: string;
   year?: number;
-  venue?: string;
+
+  journal?: string; // preferred display field
+  venue?: string; // fallback for legacy data
   type?: string;
+
   tags: string[];
   url?: string;
   pdf?: string;
@@ -33,10 +50,6 @@ type Publication = {
   abstract?: string;
   order: number;
 };
-
-function cx(...classes: Array<string | false | null | undefined>) {
-  return classes.filter(Boolean).join(" ");
-}
 
 function detectDelimiter(text: string): { delimiter?: string; reason: string } {
   const firstLine = (text || "").split(/\r?\n/)[0] || "";
@@ -74,7 +87,9 @@ function toNumber(v: unknown, fallback = 9999) {
 function toYear(v: unknown): number | undefined {
   const s = String(v ?? "").trim();
   if (!s) return undefined;
-  const n = Number(s);
+  const m = s.match(/\b(\d{4})\b/);
+  if (!m) return undefined;
+  const n = Number(m[1]);
   if (!Number.isFinite(n)) return undefined;
   if (n < 1900 || n > 2100) return undefined;
   return n;
@@ -85,16 +100,22 @@ function toPublication(r: PublicationRow): Publication {
   const pdf = isHttpUrl(r.pdf) ? String(r.pdf).trim() : undefined;
   const doi = (r.doi || "").trim() || undefined;
 
-  // If DOI is provided but url missing, optionally build doi.org link
+  // If DOI is provided but url missing, build doi.org link
   const doiUrl = !url && doi ? `https://doi.org/${doi.replace(/^https?:\/\/doi\.org\//, "")}` : undefined;
+
+  const journal = (r.journal || "").trim() || undefined;
+  const venue = (r.venue || "").trim() || undefined;
 
   return {
     id: (r.id || "").trim(),
     title: (r.title || "").trim(),
     authors: (r.authors || "").trim() || undefined,
     year: toYear(r.year),
-    venue: (r.venue || "").trim() || undefined,
+
+    journal,
+    venue,
     type: (r.type || "").trim() || undefined,
+
     tags: normalizeTags(r.tags),
     url: url || doiUrl,
     pdf,
@@ -110,6 +131,9 @@ export default function PublicationsPage() {
   const [errMsg, setErrMsg] = useState<string | null>(null);
   const [query, setQuery] = useState("");
 
+  // Abstract toggle (one open at a time)
+  const [openAbsId, setOpenAbsId] = useState<string | null>(null);
+
   const [usedUrl, setUsedUrl] = useState<string>("");
   const [diag, setDiag] = useState<{
     status?: number;
@@ -119,6 +143,7 @@ export default function PublicationsPage() {
     parsedFields?: string[];
   } | null>(null);
 
+  // NOTE: uses your existing env var name
   const sheetUrl = (process.env.NEXT_PUBLIC_PUBLICATIONS_SHEET_CSV_URL || "").trim();
 
   async function load() {
@@ -146,17 +171,24 @@ export default function PublicationsPage() {
       });
 
       const rows: PublicationRow[] = ((parsed.data as any[]) || []).map((r: any) => ({
+        // Core fields
         id: r?.id ?? r?.["ID"] ?? r?.["Id"],
         title: r?.title ?? r?.["Title"],
         authors: r?.authors ?? r?.author ?? r?.["Authors"],
-        year: r?.year ?? r?.["Year"] ?? r?.date,
-        venue: r?.venue ?? r?.journal ?? r?.conference ?? r?.["Journal"],
+        year: r?.year ?? r?.["Year"] ?? r?.date ?? r?.["년도"],
+
+        // New schema
+        journal: r?.journal ?? r?.["Journal"] ?? r?.["저널"],
+
+        // Legacy schema
+        venue: r?.venue ?? r?.conference ?? r?.["Venue"],
         type: r?.type ?? r?.category,
+
         tags: r?.tags ?? r?.tag,
         url: r?.url ?? r?.link ?? r?.website,
         pdf: r?.pdf ?? r?.fulltext ?? r?.file,
         doi: r?.doi,
-        abstract: r?.abstract ?? r?.summary,
+        abstract: r?.abstract ?? r?.summary ?? r?.["Abstract"] ?? r?.["초록"],
         order: r?.order,
       }));
 
@@ -166,11 +198,13 @@ export default function PublicationsPage() {
         .sort((a, b) => {
           // 1) order asc if provided
           const od = a.order - b.order;
-          if (od !== 0 && Number.isFinite(od)) return od;
+          if (Number.isFinite(od) && od !== 0) return od;
+
           // 2) year desc
           const ay = a.year ?? -Infinity;
           const by = b.year ?? -Infinity;
           if (by !== ay) return by - ay;
+
           // 3) title
           return a.title.localeCompare(b.title);
         });
@@ -205,6 +239,7 @@ export default function PublicationsPage() {
       const hay = [
         p.title,
         p.authors || "",
+        p.journal || "",
         p.venue || "",
         p.type || "",
         p.tags.join(" "),
@@ -217,21 +252,27 @@ export default function PublicationsPage() {
     });
   }, [pubs, query]);
 
+  function toggleAbstract(id: string) {
+    setOpenAbsId((cur) => (cur === id ? null : id));
+  }
+
   return (
     <div className="min-h-screen bg-gradient-to-b from-white to-gray-50">
       <header className="border-b bg-white/80 backdrop-blur">
         <div className="mx-auto max-w-6xl px-6 py-8">
           <div className="text-2xl font-semibold tracking-tight text-gray-900">Publications</div>
+
           <div className="mt-2 flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
             <div className="relative w-full md:w-[520px]">
               <Search className="absolute left-3 top-3.5 h-4 w-4 text-gray-500" />
               <input
                 className="w-full rounded-xl border bg-white px-10 py-3 text-sm outline-none focus:ring-2 focus:ring-gray-200"
-                placeholder="Search: title, authors, venue, year..."
+                placeholder="Search: title, authors, journal, year..."
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
               />
             </div>
+
             <button
               onClick={load}
               className="inline-flex items-center justify-center gap-2 rounded-xl border bg-white px-4 py-3 text-sm shadow-sm hover:bg-gray-50"
@@ -242,6 +283,7 @@ export default function PublicationsPage() {
               Reload
             </button>
           </div>
+
           <div className="mt-3 text-xs text-gray-600">{loading ? "Loading…" : `Showing ${filtered.length} item(s)`}</div>
         </div>
       </header>
@@ -288,18 +330,24 @@ export default function PublicationsPage() {
           <div className="rounded-2xl border bg-white p-6 text-sm text-gray-700">
             No results. Check your sheet headers and ensure rows have both <span className="font-mono">id</span> and{" "}
             <span className="font-mono">title</span>.
+            <div className="mt-2 text-xs text-gray-500">
+              Recommended headers: <span className="font-mono">id, year, authors, title, journal, pdf, abstract</span>
+            </div>
           </div>
         ) : (
           <div className="space-y-4">
-            {filtered.map((p) => (
-              <div key={p.id} className="rounded-2xl border bg-white p-6 shadow-sm">
-                <div className="text-base font-semibold text-gray-900">{p.title}</div>
-                <div className="mt-2 text-sm text-gray-700">
-                  {[p.authors, p.venue, p.year ? String(p.year) : ""].filter(Boolean).join(" · ")}
-                </div>
-                {p.abstract && <div className="mt-3 text-sm text-gray-600">{p.abstract}</div>}
+            {filtered.map((p) => {
+              const venueLabel = p.journal || p.venue || "";
+              const open = openAbsId === p.id;
 
-                {(p.url || p.pdf) && (
+              return (
+                <div key={p.id} className="rounded-2xl border bg-white p-6 shadow-sm">
+                  <div className="text-base font-semibold text-gray-900">{p.title}</div>
+
+                  <div className="mt-2 text-sm text-gray-700">
+                    {[p.authors, venueLabel, p.year ? String(p.year) : ""].filter(Boolean).join(" · ")}
+                  </div>
+
                   <div className="mt-4 flex flex-wrap gap-2 text-sm">
                     {p.url && (
                       <a
@@ -311,6 +359,7 @@ export default function PublicationsPage() {
                         Link <ExternalLink className="h-4 w-4 text-gray-500" />
                       </a>
                     )}
+
                     {p.pdf && (
                       <a
                         href={p.pdf}
@@ -321,24 +370,52 @@ export default function PublicationsPage() {
                         PDF <FileText className="h-4 w-4 text-gray-500" />
                       </a>
                     )}
-                  </div>
-                )}
 
-                {p.tags.length > 0 && (
-                  <div className="mt-4 flex flex-wrap gap-2">
-                    {p.tags.slice(0, 12).map((t) => (
-                      <span key={`${p.id}-${t}`} className="rounded-full bg-gray-100 px-3 py-1 text-xs text-gray-700">
-                        {t}
-                      </span>
-                    ))}
+                    <button
+                      type="button"
+                      onClick={() => toggleAbstract(p.id)}
+                      disabled={!p.abstract}
+                      aria-expanded={open}
+                      aria-controls={`abs-${p.id}`}
+                      title={p.abstract ? "Show abstract" : "No abstract available"}
+                      className={cx(
+                        "inline-flex items-center gap-2 rounded-xl border px-3 py-2",
+                        p.abstract ? "bg-white hover:bg-gray-50" : "bg-gray-50 text-gray-400 cursor-not-allowed"
+                      )}
+                    >
+                      Abstract {open ? <ChevronUp className="h-4 w-4 text-gray-500" /> : <ChevronDown className="h-4 w-4 text-gray-500" />}
+                    </button>
                   </div>
-                )}
-              </div>
-            ))}
+
+                  {open && (
+                    <div
+                      id={`abs-${p.id}`}
+                      className="mt-3 rounded-xl border bg-gray-50 p-4 text-sm leading-6 text-gray-700"
+                    >
+                      {p.abstract}
+                    </div>
+                  )}
+
+                  {p.tags.length > 0 && (
+                    <div className="mt-4 flex flex-wrap gap-2">
+                      {p.tags.slice(0, 12).map((t) => (
+                        <span key={`${p.id}-${t}`} className="rounded-full bg-gray-100 px-3 py-1 text-xs text-gray-700">
+                          {t}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
           </div>
         )}
       </main>
     </div>
   );
+}
+
+function cx(...classes: Array<string | false | null | undefined>) {
+  return classes.filter(Boolean).join(" ");
 }
 
