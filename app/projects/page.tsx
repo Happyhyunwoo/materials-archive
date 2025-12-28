@@ -15,6 +15,9 @@ type ProjectRow = {
   url?: string;
   repo?: string;
   order?: string | number;
+
+  // Image slot (recommended: "/projects/your-image.png")
+  imageurl?: string;
 };
 
 type Project = {
@@ -28,6 +31,8 @@ type Project = {
   url?: string;
   repo?: string;
   order: number;
+
+  imageUrl?: string;
 };
 
 function detectDelimiter(text: string): { delimiter?: string; reason: string } {
@@ -55,6 +60,12 @@ function isHttpUrl(s?: string) {
   return v.startsWith("http://") || v.startsWith("https://");
 }
 
+// Allow local public paths like "/projects/foo.png"
+function isLocalPublicPath(s?: string) {
+  const v = (s || "").trim();
+  return v.startsWith("/");
+}
+
 function toNumber(v: unknown, fallback = 9999) {
   if (typeof v === "number" && Number.isFinite(v)) return v;
   const s = String(v ?? "").trim();
@@ -76,6 +87,9 @@ function normalizeDate(s?: string) {
 }
 
 function toProject(r: ProjectRow): Project {
+  const imgRaw = (r.imageurl || "").trim();
+  const imageUrl = imgRaw && (isHttpUrl(imgRaw) || isLocalPublicPath(imgRaw)) ? imgRaw : undefined;
+
   return {
     id: (r.id || "").trim(),
     title: (r.title || "").trim(),
@@ -87,6 +101,7 @@ function toProject(r: ProjectRow): Project {
     url: isHttpUrl(r.url) ? (r.url || "").trim() : undefined,
     repo: isHttpUrl(r.repo) ? (r.repo || "").trim() : undefined,
     order: toNumber(r.order, 9999),
+    imageUrl,
   };
 }
 
@@ -142,6 +157,9 @@ export default function ProjectsPage() {
         url: r?.url ?? r?.link ?? r?.website,
         repo: r?.repo ?? r?.github ?? r?.repository,
         order: r?.order,
+
+        // Image slot in sheet: imageurl / image_url / image
+        imageurl: r?.imageurl ?? r?.image_url ?? r?.image,
       }));
 
       const data = rows
@@ -211,9 +229,7 @@ export default function ProjectsPage() {
             </button>
           </div>
 
-          <div className="mt-3 text-xs text-gray-600">
-            {loading ? "Loading…" : `Showing ${filtered.length} project(s)`}
-          </div>
+          <div className="mt-3 text-xs text-gray-600">{loading ? "Loading…" : `Showing ${filtered.length} project(s)`}</div>
         </div>
       </header>
 
@@ -257,61 +273,79 @@ export default function ProjectsPage() {
           </div>
         ) : filtered.length === 0 ? (
           <div className="rounded-2xl border bg-white p-6 text-sm text-gray-700">
-            No results. Ensure rows have both <span className="font-mono">id</span> and{" "}
-            <span className="font-mono">title</span>.
+            No results. Ensure rows have both <span className="font-mono">id</span> and <span className="font-mono">title</span>.
+            <div className="mt-2 text-xs text-gray-500">
+              To show images, add <span className="font-mono">imageurl</span> column with values like{" "}
+              <span className="font-mono">/projects/project-picture-1.png</span>.
+            </div>
           </div>
         ) : (
           <div className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-3">
             {filtered.map((p) => (
-              <div key={p.id} className="rounded-2xl border bg-white p-6 shadow-sm">
-                <div className="text-base font-semibold text-gray-900">{p.title}</div>
-
-                {(p.status || p.startDate || p.endDate) && (
-                  <div className="mt-2 text-sm text-gray-600">
-                    {[p.status, [p.startDate, p.endDate].filter(Boolean).join("–")].filter(Boolean).join(" · ")}
+              <div key={p.id} className="rounded-2xl border bg-white shadow-sm overflow-hidden">
+                {p.imageUrl ? (
+                  <div className="h-40 w-full bg-gray-50">
+                    <img
+                      src={p.imageUrl}
+                      alt={p.title}
+                      className="h-full w-full object-cover"
+                      loading="lazy"
+                    />
                   </div>
-                )}
-
-                {p.description ? (
-                  <div className="mt-3 text-sm text-gray-600">{p.description}</div>
                 ) : (
-                  <div className="mt-3 text-sm text-gray-400">No description.</div>
+                  <div className="h-10 bg-white" />
                 )}
 
-                {(p.url || p.repo) && (
-                  <div className="mt-4 flex flex-wrap gap-2 text-sm">
-                    {p.url && (
-                      <a
-                        href={p.url}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 hover:bg-gray-50"
-                      >
-                        Website <ExternalLink className="h-4 w-4 text-gray-500" />
-                      </a>
-                    )}
-                    {p.repo && (
-                      <a
-                        href={p.repo}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 hover:bg-gray-50"
-                      >
-                        Repo <Github className="h-4 w-4 text-gray-500" />
-                      </a>
-                    )}
-                  </div>
-                )}
+                <div className="p-6">
+                  <div className="text-base font-semibold text-gray-900">{p.title}</div>
 
-                {p.tags.length > 0 && (
-                  <div className="mt-4 flex flex-wrap gap-2">
-                    {p.tags.slice(0, 12).map((t) => (
-                      <span key={`${p.id}-${t}`} className="rounded-full bg-gray-100 px-3 py-1 text-xs text-gray-700">
-                        {t}
-                      </span>
-                    ))}
-                  </div>
-                )}
+                  {(p.status || p.startDate || p.endDate) && (
+                    <div className="mt-2 text-sm text-gray-600">
+                      {[p.status, [p.startDate, p.endDate].filter(Boolean).join("–")].filter(Boolean).join(" · ")}
+                    </div>
+                  )}
+
+                  {p.description ? (
+                    <div className="mt-3 text-sm text-gray-600">{p.description}</div>
+                  ) : (
+                    <div className="mt-3 text-sm text-gray-400">No description.</div>
+                  )}
+
+                  {(p.url || p.repo) && (
+                    <div className="mt-4 flex flex-wrap gap-2 text-sm">
+                      {p.url && (
+                        <a
+                          href={p.url}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 hover:bg-gray-50"
+                        >
+                          Website <ExternalLink className="h-4 w-4 text-gray-500" />
+                        </a>
+                      )}
+                      {p.repo && (
+                        <a
+                          href={p.repo}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 hover:bg-gray-50"
+                        >
+                          Repo <Github className="h-4 w-4 text-gray-500" />
+                        </a>
+                      )}
+                    </div>
+                  )}
+
+                  {p.tags.length > 0 && (
+                    <div className="mt-4 flex flex-wrap gap-2">
+                      {p.tags.slice(0, 12).map((t) => (
+                        <span key={`${p.id}-${t}`} className="rounded-full bg-gray-100 px-3 py-1 text-xs text-gray-700">
+                          {t}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </div>
               </div>
             ))}
           </div>
