@@ -2,7 +2,7 @@
 
 import React, { useEffect, useMemo, useState } from "react";
 import Papa from "papaparse";
-import { ExternalLink, Github, Search, RefreshCcw, AlertTriangle } from "lucide-react";
+import { ExternalLink, Github, Search, RefreshCcw, AlertTriangle, X } from "lucide-react";
 
 type ProjectRow = {
   id?: string;
@@ -120,6 +120,9 @@ export default function ProjectsPage() {
     parsedFields?: string[];
   } | null>(null);
 
+  // Lightbox state
+  const [lightbox, setLightbox] = useState<{ src: string; title: string } | null>(null);
+
   const sheetUrl = (process.env.NEXT_PUBLIC_PROJECTS_SHEET_CSV_URL || "").trim();
 
   async function load() {
@@ -189,6 +192,15 @@ export default function ProjectsPage() {
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sheetUrl]);
+
+  // Close lightbox with Esc
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === "Escape") setLightbox(null);
+    }
+    if (lightbox) window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [lightbox]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -284,14 +296,21 @@ export default function ProjectsPage() {
             {filtered.map((p) => (
               <div key={p.id} className="rounded-2xl border bg-white shadow-sm overflow-hidden">
                 {p.imageUrl ? (
-                  <div className="h-40 w-full bg-gray-50">
-                    <img
-                      src={p.imageUrl}
-                      alt={p.title}
-                      className="h-full w-full object-cover"
-                      loading="lazy"
-                    />
-                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setLightbox({ src: p.imageUrl!, title: p.title })}
+                    className="block w-full text-left"
+                    title="Click to enlarge"
+                  >
+                    <div className="h-40 w-full bg-gray-50">
+                      <img
+                        src={p.imageUrl}
+                        alt={p.title}
+                        className="h-full w-full object-cover"
+                        loading="lazy"
+                      />
+                    </div>
+                  </button>
                 ) : (
                   <div className="h-10 bg-white" />
                 )}
@@ -351,6 +370,43 @@ export default function ProjectsPage() {
           </div>
         )}
       </main>
+
+      {/* Lightbox */}
+      {lightbox && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Image preview"
+          onClick={() => setLightbox(null)}
+        >
+          <div
+            className="relative w-full max-w-5xl overflow-hidden rounded-2xl bg-white shadow-xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b px-4 py-3">
+              <div className="min-w-0 pr-2 text-sm font-semibold text-gray-900 truncate">{lightbox.title}</div>
+              <button
+                type="button"
+                onClick={() => setLightbox(null)}
+                className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm hover:bg-gray-50"
+                title="Close"
+              >
+                <X className="h-4 w-4" />
+                Close
+              </button>
+            </div>
+
+            <div className="max-h-[80vh] overflow-auto bg-black">
+              <img
+                src={lightbox.src}
+                alt={lightbox.title}
+                className="mx-auto h-auto w-full max-w-5xl object-contain"
+              />
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
